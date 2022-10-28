@@ -1,5 +1,3 @@
-import xs from 'xstream';
-
 function doNothing() { }
 
 export class PipeSignal {
@@ -81,7 +79,7 @@ export abstract class Pipe<T> {
 
         function postNewValue() {
             valuePending = false;
-            const newValue = this.value();
+            const newValue = this.get();
 
             if (!(newValue instanceof PipeSignal)) {
                 listener.onValue(newValue);
@@ -474,6 +472,42 @@ class FlatteningPipe<T> extends Pipe<T> {
     subscribePing(onPing: () => void): () => void {
         return this.subs.subscribePing(onPing);
     }
+}
+
+class DebouncingPipe<T> extends Pipe<Array<T>> {
+
+    private currentlyDebouncing: boolean;
+    private lastPingTime: number;
+    private allValuesSinceLastGet: Array<T>;
+
+    constructor(
+        private parentPipe: Pipe<T>,
+        private debounceTimeMs: number
+    ) {
+        super();
+        this.allValuesSinceLastGet = [];
+        this.currentlyDebouncing = false;
+    }
+
+    public get(): T[] | PipeSignal {
+
+    }
+
+    subscribePing(onPing: () => void): () => void {
+
+        if (this.currentlyDebouncing) {
+            //Check time against debounceTime
+
+            // Need to wait a frame here
+            const value = this.parentPipe.get();
+            if (value instanceof PipeSignal) {
+
+            }
+
+            this.allValuesSinceLastGet.push(this.parentPipe.get());
+        }
+    }
+
 }
 
 class AccumulatingPipe<TIn, TState> extends Pipe<TState> {
