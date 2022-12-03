@@ -15,6 +15,10 @@ export interface PipeListener<T> {
     //onError: (err: Error) => void;
 };
 
+function isPromise(value: any): value is PromiseLike<any> {
+    return (typeof value?.then === 'function');
+}
+
 export abstract class Pipe<T> {
 
     static asPipe<T>(value: Pipe<T> | PromiseLike<T> | T | undefined): Pipe<T> {
@@ -24,11 +28,13 @@ export abstract class Pipe<T> {
         else if (value instanceof Pipe) {
             return value;
         }
-        else if ('then' in value) {
-            // return new PromisePipe
+        else if (isPromise(value)) {
+            const state = new State<T>();
+            value.then(result => state.set(result));
+            return state;
         }
         else {
-            return Pipe.fixed(value);
+            return <Pipe<T>>Pipe.fixed(value);
         }
     }
 
@@ -62,6 +68,15 @@ export abstract class Pipe<T> {
 
         let valuePending = false;
 
+        const postNewValue = () => {
+            valuePending = false;
+            const newValue = this.get();
+
+            if (!(newValue instanceof PipeSignal)) {
+                listener.onValue(newValue);
+            }
+        }
+
         // Emulate a ping when the subscription is opened, for this subscription only. This allows 
         // fixed, starting, and remembered values to fire.
         onPing();
@@ -75,15 +90,6 @@ export abstract class Pipe<T> {
 
             valuePending = true;
             setTimeout(postNewValue, 0);
-        }
-
-        function postNewValue() {
-            valuePending = false;
-            const newValue = this.get();
-
-            if (!(newValue instanceof PipeSignal)) {
-                listener.onValue(newValue);
-            }
         }
     }
 
@@ -134,7 +140,9 @@ class SubscriptionHolder {
     private proxies: { [proxyIndex: number]: OnOff };
 
     constructor() {
+        this.subscriberCount = 0;
         this.subscribers = {};
+        this.proxyCount = 0;
         this.proxies = [];
     }
 
@@ -216,22 +224,19 @@ export class State<T> extends Pipe<T> {
     }
 
     private subs: SubscriptionHolder;
-    private hasValue: boolean;
 
     constructor(
         private value?: T
     ) {
         super();
         this.subs = new SubscriptionHolder();
-        this.hasValue = value !== undefined;
     }
 
     public get(): T | PipeSignal {
-        return this.hasValue ? this.value : PipeSignal.noValue;
+        return this.value === undefined ? PipeSignal.noValue : this.value;
     }
 
     public set(newValue: T) {
-        this.hasValue = true;
         this.value = newValue;
         this.subs.sendPing();
     }
@@ -298,18 +303,19 @@ class MemoryPipe<T> extends Pipe<T> {
 
     private hasValue: boolean;
     private isDirty: boolean;
-    private currentValue: T;
+    private currentValue: T | undefined;
 
     constructor(
         private parent: Pipe<T>
     ) {
         super();
-        this.isDirty = false;
+        this.isDirty = true;
+        this.hasValue = false;
     }
 
     public get(): T | PipeSignal {
         if (!this.isDirty) {
-            return this.currentValue;
+            return this.currentValue === undefined ? PipeSignal.noValue : this.currentValue;
         }
 
         this.isDirty = false;
@@ -318,7 +324,7 @@ class MemoryPipe<T> extends Pipe<T> {
         if (newValue instanceof PipeSignal) {
             // TODO: Is this what makes the most sense here?
             // When we get a "nevermind" signal, we should probably not change our internal state.
-            return this.hasValue ? this.currentValue : PipeSignal.noValue;
+            return this.hasValue ? this.currentValue! : PipeSignal.noValue;
         }
         else {
             this.currentValue = newValue;
@@ -380,7 +386,7 @@ class CombinedPipe extends Pipe<Array<any>> {
 }
 
 class MergedPipe extends Pipe<any> {
-    private lastPingedPipe: Pipe<any>;
+    private lastPingedPipe: Pipe<any> | undefined;
 
     constructor(
         private pipes: Array<Pipe<any>>
@@ -435,7 +441,7 @@ class EmptyPipe<T> extends Pipe<T> {
 
 class FlatteningPipe<T> extends Pipe<T> {
 
-    private lastPipe: Pipe<T>;
+    private lastPipe: Pipe<T> | null;
     private unsubscribe: () => void;
 
     private readonly parent: Pipe<Pipe<T>>;
@@ -448,6 +454,7 @@ class FlatteningPipe<T> extends Pipe<T> {
         this.parent = parentPipeOfPipes.remember();
         this.subs = new SubscriptionHolder();
         this.unsubscribe = doNothing;
+        this.lastPipe = null;
 
         // This doesn't need to be unsubscribed from because the subscribed object has the same lifetime as the subscribing.
         this.subs.proxySubscribePing(this.parent, () => this.subs.sendPing());
@@ -474,41 +481,40 @@ class FlatteningPipe<T> extends Pipe<T> {
     }
 }
 
-class DebouncingPipe<T> extends Pipe<Array<T>> {
+//class DebouncingPipe<T> extends Pipe<Array<T>> {
 
-    private currentlyDebouncing: boolean;
-    private lastPingTime: number;
-    private allValuesSinceLastGet: Array<T>;
+//    private currentlyDebouncing: boolean;
+//    private lastPingTime: number;
+//    private allValuesSinceLastGet: Array<T>;
 
-    constructor(
-        private parentPipe: Pipe<T>,
-        private debounceTimeMs: number
-    ) {
-        super();
-        this.allValuesSinceLastGet = [];
-        this.currentlyDebouncing = false;
-    }
+//    constructor(
+//        private parentPipe: Pipe<T>,
+//        private debounceTimeMs: number
+//    ) {
+//        super();
+//        this.allValuesSinceLastGet = [];
+//        this.currentlyDebouncing = false;
+//    }
 
-    public get(): T[] | PipeSignal {
+//    public get(): T[] | PipeSignal {
 
-    }
+//    }
 
-    subscribePing(onPing: () => void): () => void {
+//    subscribePing(onPing: () => void): () => void {
 
-        if (this.currentlyDebouncing) {
-            //Check time against debounceTime
+//        if (this.currentlyDebouncing) {
+//            //Check time against debounceTime
 
-            // Need to wait a frame here
-            const value = this.parentPipe.get();
-            if (value instanceof PipeSignal) {
+//            // Need to wait a frame here
+//            const value = this.parentPipe.get();
+//            if (value instanceof PipeSignal) {
 
-            }
+//            }
 
-            this.allValuesSinceLastGet.push(this.parentPipe.get());
-        }
-    }
-
-}
+//            this.allValuesSinceLastGet.push(this.parentPipe.get());
+//        }
+//    }
+//}
 
 class AccumulatingPipe<TIn, TState> extends Pipe<TState> {
 
