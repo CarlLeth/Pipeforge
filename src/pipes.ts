@@ -77,10 +77,6 @@ export abstract class Pipe<T> {
             }
         }
 
-        // Emulate a ping when the subscription is opened, for this subscription only. This allows 
-        // fixed, starting, and remembered values to fire.
-        onPing();
-
         return this.subscribePing(onPing);
 
         function onPing() {
@@ -114,8 +110,12 @@ export abstract class Pipe<T> {
         return new AccumulatingPipe<T, TState>(this, accumulator, seed);
     }
 
-    flatten<T>(this: Pipe<Pipe<T>>): Pipe<T> {
+    flatten<TInner>(this: Pipe<Pipe<TInner>>): Pipe<TInner> {
         return new FlatteningPipe(this);
+    }
+
+    startWith(startingValue: T): Pipe<T> {
+        return Pipe.merge(Pipe.fixed(startingValue), this);
     }
 
     static combine = function combine(...pipes: Array<Pipe<any>>) {
@@ -242,6 +242,9 @@ export class State<T> extends Pipe<T> {
     }
 
     subscribePing(onPing: () => void): () => void {
+        if (this.value !== undefined) {
+            onPing();
+        }
         return this.subs.subscribePing(onPing);
     }
 }
@@ -334,6 +337,11 @@ class MemoryPipe<T> extends Pipe<T> {
     }
 
     subscribePing(onPing: () => void): () => void {
+        if (this.hasValue) {
+            // Let the subscriber know a value is immediately available.
+            onPing();
+        }
+
         return this.parent.subscribePing(() => {
             // It's tempting to clear this.currentValue here for memory efficiency, but a ping only
             // tells us there *might* be a new value for us. It could be a "never mind" signal.
@@ -395,6 +403,10 @@ class MergedPipe extends Pipe<any> {
     }
 
     public get() {
+        // TODO: Currently, a pipe that sends a ping, but then a "never mind" will erase the value.
+        // If we only want to accept valid values, we may need to keep a heap of pipes in order of who last 
+        // pinged and walk backward through the list until we get a valid value.
+        
         if (this.lastPingedPipe) {
             return this.lastPingedPipe.get();
         }
@@ -404,10 +416,10 @@ class MergedPipe extends Pipe<any> {
     }
 
     subscribePing(onPing: () => void): () => void {
-        const allSubscriptions = this.pipes.map(p => {
+        const allSubscriptions = this.pipes.map(p => p.subscribePing(() => {
             this.lastPingedPipe = p;
-            return p.subscribePing(onPing);
-        });
+            onPing();
+        }));
 
         return () => allSubscriptions.forEach(unsub => unsub());
     }
@@ -425,6 +437,8 @@ class FixedPipe<T> extends Pipe<T> {
     }
 
     subscribePing(onPing: () => void): () => void {
+        // Let the subscriber know a value is immediately available.
+        onPing();
         return doNothing;
     }
 }
@@ -549,6 +563,10 @@ class AccumulatingPipe<TIn, TState> extends Pipe<TState> {
     }
 
     subscribePing(onPing: () => void): () => void {
+        if (this.currentValue !== undefined) {
+            onPing();
+        }
+
         return this.parentPipe.subscribePing(() => {
             this.isDirty = true;
             onPing();
