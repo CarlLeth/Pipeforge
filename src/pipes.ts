@@ -1,3 +1,5 @@
+import { RecencyList } from "./RecencyList";
+
 function doNothing() { }
 
 export class PipeSignal {
@@ -394,30 +396,36 @@ class CombinedPipe extends Pipe<Array<any>> {
 }
 
 class MergedPipe extends Pipe<any> {
-    private lastPingedPipe: Pipe<any> | undefined;
+    //private lastPingedPipe: Pipe<any> | undefined;
+    private readonly recentPipes: RecencyList<Pipe<any>>
 
-    constructor(
-        private pipes: Array<Pipe<any>>
-    ) {
+    constructor(pipes: Array<Pipe<any>>) {
         super();
+        this.recentPipes = new RecencyList(pipes);
     }
 
     public get() {
-        // TODO: Currently, a pipe that sends a ping, but then a "never mind" will erase the value.
-        // If we only want to accept valid values, we may need to keep a heap of pipes in order of who last 
-        // pinged and walk backward through the list until we get a valid value.
-        
-        if (this.lastPingedPipe) {
-            return this.lastPingedPipe.get();
+        for (let pipe of this.recentPipes) {
+            const value = pipe.get();
+            if (!(value instanceof PipeSignal)) {
+                return value;
+            }
         }
-        else {
-            return PipeSignal.noValue;
-        }
+
+        return PipeSignal.noValue;
+
+        //if (this.lastPingedPipe) {
+        //    return this.lastPingedPipe.get();
+        //}
+        //else {
+        //    return PipeSignal.noValue;
+        //}
     }
 
     subscribePing(onPing: () => void): () => void {
-        const allSubscriptions = this.pipes.map(p => p.subscribePing(() => {
-            this.lastPingedPipe = p;
+        const allSubscriptions = this.recentPipes.items.map(p => p.subscribePing(() => {
+            //this.lastPingedPipe = p;
+            this.recentPipes.setHead(p);
             onPing();
         }));
 
