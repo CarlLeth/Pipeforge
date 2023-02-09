@@ -40,6 +40,9 @@
   <ItemGroup>
     <TypeScriptCompile Include="src\index.ts" />
     <TypeScriptCompile Include="src\pipes.ts" />
+    <TypeScriptCompile Include="src\RecencyList.ts">
+      <SubType>Code</SubType>
+    </TypeScriptCompile>
   </ItemGroup>
   <Import Project="$(VSToolsPath)\Node.js Tools\Microsoft.NodejsToolsV2.targets" />
   <ProjectExtensions>
