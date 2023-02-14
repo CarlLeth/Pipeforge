@@ -40,7 +40,7 @@ export abstract class Pipe<T> {
         }
     }
 
-    static fixed<T>(fixedValue: T) {
+    static fixed<T>(fixedValue: T): Pipe<T> {
         return new FixedPipe(fixedValue);
     }
 
@@ -95,7 +95,7 @@ export abstract class Pipe<T> {
         return new FilterPipe<T>(this, predicate);
     }
 
-    map<TEnd>(projection: (value: T) => TEnd) {
+    map<TEnd>(projection: (value: T) => TEnd): Pipe<TEnd> {
         return new MapPipe<T, TEnd>(this, projection);
     }
 
@@ -108,12 +108,16 @@ export abstract class Pipe<T> {
         }
     }
 
-    fold<TState>(accumulator: (state: TState, value: T) => TState, seed: TState) {
+    fold<TState>(accumulator: (state: TState, value: T) => TState, seed: TState): Pipe<TState> {
         return new AccumulatingPipe<T, TState>(this, accumulator, seed);
     }
 
     flatten<TInner>(this: Pipe<Pipe<TInner>>): Pipe<TInner> {
         return new FlatteningPipe(this);
+    }
+
+    flattenConcurrently<TInner>(this: Pipe<Pipe<TInner>>): Pipe<TInner> {
+        return new FlatteningPipeConcurrent(this);
     }
 
     startWith(startingValue: T): Pipe<T> {
@@ -127,6 +131,14 @@ export abstract class Pipe<T> {
     static merge = function combine(...pipes: Array<Pipe<any>>) {
         return new MergedPipe(pipes) as unknown;
     } as PipeMergeSignature
+
+    static fromPromise = function fromPromise<T>(promise: PromiseLike<T>): Pipe<T> {
+        const state = new State<T>();
+        promise.then(o => state.set(o));
+
+        // TODO: Error handling?
+        return state;
+    }
 }
 
 interface OnOff {
@@ -134,7 +146,7 @@ interface OnOff {
     off: () => void;
 }
 
-class SubscriptionHolder {
+export class SubscriptionHolder {
     private subscriberCount: number;
     private subscribers: { [subscriberIndex: number]: () => void };
 
@@ -195,10 +207,21 @@ class SubscriptionHolder {
     public proxySubscribePing(pipe: Pipe<any>, onPing: () => void): () => void {
 
         let unsubscribe: () => void;
+        return this.proxyLink(
+            () => unsubscribe = pipe.subscribePing(onPing),
+            () => unsubscribe()
+        );
+    }
+
+    // Calls the "on" function when the first subscriber subscribes to this holder.
+    // Calls the "off" function after the last subscriber has closed thier subscription.
+    // On and off may be called more than once, but will always be called in the order [on, off, on, off, ...]
+    // Call the returned function to disable and remove the proxy.
+    public proxyLink(on: () => void, off: () => void): () => void {
 
         const proxySubscriptionSwitch = {
-            on: () => unsubscribe = pipe.subscribePing(onPing),
-            off: () => unsubscribe()
+            on: on,
+            off: off
         };
 
         const proxyIndex = this.proxyCount;
@@ -249,9 +272,13 @@ export class State<T> extends Pipe<T> {
         }
         return this.subs.subscribePing(onPing);
     }
+
+    public asPipe(): Pipe<T> {
+        return this;
+    }
 }
 
-class FilterPipe<T> extends Pipe<T> {
+export class FilterPipe<T> extends Pipe<T> {
 
     constructor(
         private parent: Pipe<T>,
@@ -280,7 +307,7 @@ class FilterPipe<T> extends Pipe<T> {
 
 }
 
-class MapPipe<TStart, TEnd> extends Pipe<TEnd> {
+export class MapPipe<TStart, TEnd> extends Pipe<TEnd> {
     constructor(
         private parent: Pipe<TStart>,
         private projection: (value: TStart) => TEnd
@@ -304,7 +331,7 @@ class MapPipe<TStart, TEnd> extends Pipe<TEnd> {
     }
 }
 
-class MemoryPipe<T> extends Pipe<T> {
+export class MemoryPipe<T> extends Pipe<T> {
 
     private hasValue: boolean;
     private isDirty: boolean;
@@ -355,7 +382,7 @@ class MemoryPipe<T> extends Pipe<T> {
     }
 }
 
-class CombinedPipe extends Pipe<Array<any>> {
+export class CombinedPipe extends Pipe<Array<any>> {
 
     //private hasValue: Array<boolean>;
     //private lastValues: Array<any>;
@@ -395,7 +422,7 @@ class CombinedPipe extends Pipe<Array<any>> {
     }
 }
 
-class MergedPipe extends Pipe<any> {
+export class MergedPipe extends Pipe<any> {
     //private lastPingedPipe: Pipe<any> | undefined;
     private readonly recentPipes: RecencyList<Pipe<any>>
 
@@ -433,7 +460,7 @@ class MergedPipe extends Pipe<any> {
     }
 }
 
-class FixedPipe<T> extends Pipe<T> {
+export class FixedPipe<T> extends Pipe<T> {
     constructor(
         private value: T
     ) {
@@ -451,7 +478,7 @@ class FixedPipe<T> extends Pipe<T> {
     }
 }
 
-class EmptyPipe<T> extends Pipe<T> {
+export class EmptyPipe<T> extends Pipe<T> {
     public get(): T | PipeSignal {
         return PipeSignal.noValue;
     }
@@ -461,7 +488,7 @@ class EmptyPipe<T> extends Pipe<T> {
     }
 }
 
-class FlatteningPipe<T> extends Pipe<T> {
+export class FlatteningPipe<T> extends Pipe<T> {
 
     private lastPipe: Pipe<T> | null;
     private unsubscribe: () => void;
@@ -492,7 +519,7 @@ class FlatteningPipe<T> extends Pipe<T> {
         if (currentPipe !== this.lastPipe) {
             this.unsubscribe();
             this.lastPipe = currentPipe;
-            this.unsubscribe = this.lastPipe.subscribePing(() => this.subs.sendPing());
+            this.unsubscribe = currentPipe.subscribePing(() => this.subs.sendPing());
         }
 
         return currentPipe.get();
@@ -502,6 +529,64 @@ class FlatteningPipe<T> extends Pipe<T> {
         return this.subs.subscribePing(onPing);
     }
 }
+
+export class FlatteningPipeConcurrent<T> extends Pipe<T> {
+
+    private seenPipes: Set<Pipe<T>>;
+    private unsubscribeFuncs: Array<() => void>;
+
+    private readonly parent: Pipe<Pipe<T>>;
+    private readonly subs: SubscriptionHolder;
+
+    constructor(
+        parentPipeOfPipes: Pipe<Pipe<T>>
+    ) {
+        super();
+        this.parent = parentPipeOfPipes.remember();
+        this.subs = new SubscriptionHolder();
+        this.unsubscribeFuncs = [];
+        this.seenPipes = new Set<Pipe<T>>();
+
+        // This doesn't need to be unsubscribed from because the subscribed object has the same lifetime as the subscribing.
+        this.subs.proxySubscribePing(this.parent, () => this.subs.sendPing());
+    }
+
+    public get(): T | PipeSignal {
+        const currentPipe = this.parent.get();
+
+        if (currentPipe instanceof PipeSignal) {
+            return currentPipe;
+        }
+
+        if (!this.seenPipes.has(currentPipe)) {
+            this.seenPipes.add(currentPipe);
+            this.unsubscribeFuncs.push(currentPipe.subscribePing(() => this.subs.sendPing()));
+        }
+
+        return currentPipe.get();
+    }
+
+    subscribePing(onPing: () => void): () => void {
+        return this.subs.subscribePing(onPing);
+    }
+}
+
+//export class DelayingPipe<T> extends Pipe<T> {
+//    constructor(
+//        private parent: Pipe<T>
+//    ) {
+//        super();
+//    }
+
+//    public get(): T | PipeSignal {
+        
+//    }
+
+//    subscribePing(onPing: () => void): () => void {
+//        throw new Error("Method not implemented.");
+//    }
+
+//}
 
 //class DebouncingPipe<T> extends Pipe<Array<T>> {
 
@@ -538,7 +623,7 @@ class FlatteningPipe<T> extends Pipe<T> {
 //    }
 //}
 
-class AccumulatingPipe<TIn, TState> extends Pipe<TState> {
+export class AccumulatingPipe<TIn, TState> extends Pipe<TState> {
 
     private isDirty: boolean;
     private currentValue: TState;
