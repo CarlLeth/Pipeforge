@@ -124,6 +124,24 @@ export abstract class Pipe<T> {
         return Pipe.merge(Pipe.fixed(startingValue), this);
     }
 
+    /*
+     * Returns a pipe which reproduces the signals of this pipe after (roughly) the given number of millseconds.
+     */
+    delay(this: Pipe<T>, milliseconds: number): Pipe<T> {
+        return new DelayingPipe(this, milliseconds);
+    }
+
+    /*
+     * 
+     */
+    fallback(this: Pipe<T>, getFallbackValue: () => T): Pipe<T> {
+        return new FallbackPipe(this, getFallbackValue);
+    }
+
+    catch<TError>(this: Pipe<T>, handleError: (error: any) => TError): Pipe<T | TError> {
+        return new ErrorCatchingPipe<T, TError>(this, handleError);
+    }
+
     static combine = function combine(...pipes: Array<Pipe<any>>) {
         return new CombinedPipe(pipes) as unknown;
     } as PipeCombineSignature
@@ -571,22 +589,88 @@ export class FlatteningPipeConcurrent<T> extends Pipe<T> {
     }
 }
 
-//export class DelayingPipe<T> extends Pipe<T> {
-//    constructor(
-//        private parent: Pipe<T>
-//    ) {
-//        super();
-//    }
+export class DelayingPipe<T> extends Pipe<T> {
 
-//    public get(): T | PipeSignal {
-        
-//    }
+    private currentSignal: T | PipeSignal;
+    private readonly subs: SubscriptionHolder;
 
-//    subscribePing(onPing: () => void): () => void {
-//        throw new Error("Method not implemented.");
-//    }
+    constructor(
+        private parent: Pipe<T>,
+        private delayMilliseconds: number
+    ) {
+        super();
+        this.currentSignal = PipeSignal.noValue;
+        this.subs = new SubscriptionHolder();
 
-//}
+        this.subs.proxySubscribePing(parent, () => this.onParentPing());
+    }
+
+    private onParentPing() {
+        // Get and update the value on the next frame
+        setTimeout(() => {
+            this.currentSignal = this.parent.get();
+        }, 0);
+
+        // Simultaneously, schedule the downstream ping.
+        // This prevents the additional frame above from adding to our delay.
+        setTimeout(() => {
+            this.subs.sendPing();
+        }, this.delayMilliseconds)
+    }
+
+    public get(): T | PipeSignal {
+        return this.currentSignal;
+    }
+
+    subscribePing(onPing: () => void): () => void {
+        return this.subs.subscribePing(onPing);
+    }
+}
+
+export class FallbackPipe<T> extends Pipe<T> {
+    constructor(
+        private parent: Pipe<T>,
+        private getFallbackValue: () => T
+    ) {
+        super();
+    }
+
+    public get(): T | PipeSignal {
+        const value = this.parent.get();
+
+        if (value instanceof PipeSignal) {
+            return this.getFallbackValue();
+        }
+        else {
+            return value;
+        }
+    }
+
+    subscribePing(onPing: () => void): () => void {
+        return this.parent.subscribePing(onPing);
+    }
+}
+
+export class ErrorCatchingPipe<T, TError> extends Pipe<T | TError> {
+    constructor(
+        private parent: Pipe<T>,
+        private onError: (err: any) => TError
+    ) {
+        super();
+    }
+
+    public get(): T | TError | PipeSignal {
+        try {
+            return this.parent.get();
+        } catch (err) {
+            return this.onError(err);
+        }
+    }
+
+    subscribePing(onPing: () => void): () => void {
+        return this.parent.subscribePing(onPing);
+    }
+}
 
 //class DebouncingPipe<T> extends Pipe<Array<T>> {
 
