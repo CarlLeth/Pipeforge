@@ -127,19 +127,57 @@ export abstract class Pipe<T> {
     /*
      * Returns a pipe which reproduces the signals of this pipe after (roughly) the given number of millseconds.
      */
-    delay(this: Pipe<T>, milliseconds: number): Pipe<T> {
+    delay(milliseconds: number): Pipe<T> {
         return new DelayingPipe(this, milliseconds);
     }
 
     /*
-     * 
+     * Returns a stream based on this one that is guaranteed to have a value at all times. Whenever this
+     * stream has a value, that value is returned; otherwise, the given fallback value is returned.
      */
-    fallback(this: Pipe<T>, getFallbackValue: () => T): Pipe<T> {
+    fallback(getFallbackValue: () => T): Pipe<T> {
         return new FallbackPipe(this, getFallbackValue);
     }
 
-    catch<TError>(this: Pipe<T>, handleError: (error: any) => TError): Pipe<T | TError> {
+    catch(handleError: (error: any) => void): Pipe<T>
+    catch(handleError: (error: any) => T): Pipe<T>
+    catch<TError>(handleError: (error: any) => TError): Pipe<T | TError> {
         return new ErrorCatchingPipe<T, TError>(this, handleError);
+    }
+
+    /*
+     * Opens a subscription to this stream which performs the given action when a value is available, and then closes itself.
+     * This treats the stream as if it were a promise. Note that if this stream never emits a value, the subscription is never removed.
+     */
+    once(doOnce: (value: T) => void) {
+        let unsubscribe = doNothing;
+
+        unsubscribe = this.subscribe({
+            onValue: val => {
+                unsubscribe();
+                doOnce(val);
+            }
+        });
+    }
+
+    asPromise(): Promise<T> {
+        let unsubscribe = doNothing;
+        let resolve: (value: T) => void;
+        let reject: (reason: any) => void;
+
+        const promise = new Promise<T>((res, rej) => {
+            resolve = res;
+            reject = rej;
+        });
+
+        this.catch(err => {
+            reject(err);
+            unsubscribe();
+        }).once(val => {
+            resolve(val);
+        });
+
+        return promise;
     }
 
     static combine = function combine(...pipes: Array<Pipe<any>>) {
@@ -606,14 +644,17 @@ export class DelayingPipe<T> extends Pipe<T> {
     }
 
     private onParentPing() {
-        // Get and update the value on the next frame
+        let lastSignal: T | PipeSignal;
+
+        // Get the value on the next frame, but wait to update it.
         setTimeout(() => {
-            this.currentSignal = this.parent.get();
+            lastSignal = this.parent.get();
         }, 0);
 
-        // Simultaneously, schedule the downstream ping.
-        // This prevents the additional frame above from adding to our delay.
+        // Wait to update the current signal value and send a ping synchronously.
+        // Keep as a separate timeout: this prevents the additional frame above from adding to our delay.
         setTimeout(() => {
+            this.currentSignal = lastSignal;
             this.subs.sendPing();
         }, this.delayMilliseconds)
     }
@@ -654,7 +695,7 @@ export class FallbackPipe<T> extends Pipe<T> {
 export class ErrorCatchingPipe<T, TError> extends Pipe<T | TError> {
     constructor(
         private parent: Pipe<T>,
-        private onError: (err: any) => TError
+        private onError: (err: any) => TError | PipeSignal | undefined | void
     ) {
         super();
     }
@@ -663,7 +704,13 @@ export class ErrorCatchingPipe<T, TError> extends Pipe<T | TError> {
         try {
             return this.parent.get();
         } catch (err) {
-            return this.onError(err);
+
+            let replacement = this.onError(err);
+            if (replacement === undefined) {
+                replacement = PipeSignal.noValue;
+            }
+
+            return <T | TError | PipeSignal>replacement!;
         }
     }
 
