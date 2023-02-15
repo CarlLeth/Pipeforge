@@ -131,6 +131,14 @@ export abstract class Pipe<T> {
         return new DelayingPipe(this, milliseconds);
     }
 
+    debounce(milliseconds: number): Pipe<Array<T>> {
+        return new DebouncingPipe(this, milliseconds);
+    }
+
+    debounceLatest(milliseconds: number): Pipe<T> {
+        return this.debounce(milliseconds).map(values => values[values.length - 1]);
+    }
+
     /*
      * Returns a stream based on this one that is guaranteed to have a value at all times. Whenever this
      * stream has a value, that value is returned; otherwise, the given fallback value is returned.
@@ -639,7 +647,6 @@ export class DelayingPipe<T> extends Pipe<T> {
         super();
         this.currentSignal = PipeSignal.noValue;
         this.subs = new SubscriptionHolder();
-
         this.subs.proxySubscribePing(parent, () => this.onParentPing());
     }
 
@@ -719,40 +726,65 @@ export class ErrorCatchingPipe<T, TError> extends Pipe<T | TError> {
     }
 }
 
-//class DebouncingPipe<T> extends Pipe<Array<T>> {
+export class DebouncingPipe<T> extends Pipe<Array<T>> {
 
-//    private currentlyDebouncing: boolean;
-//    private lastPingTime: number;
-//    private allValuesSinceLastGet: Array<T>;
+    private lastPingTime: number;
+    private timeoutHandle: number;
+    private bufferedValues: Array<T>;
+    private subs: SubscriptionHolder;
 
-//    constructor(
-//        private parentPipe: Pipe<T>,
-//        private debounceTimeMs: number
-//    ) {
-//        super();
-//        this.allValuesSinceLastGet = [];
-//        this.currentlyDebouncing = false;
-//    }
+    constructor(
+        private parent: Pipe<T>,
+        private debounceTimeMs: number
+    ) {
+        super();
+        this.bufferedValues = [];
+        this.lastPingTime = 0;
+        this.timeoutHandle = 0;
+        this.subs = new SubscriptionHolder();
+        this.subs.proxySubscribePing(parent, () => this.onParentPing());
+    }
 
-//    public get(): T[] | PipeSignal {
+    public get(): T[] | PipeSignal {
+        return this.bufferedValues;
+    }
 
-//    }
+    private onParentPing() {
 
-//    subscribePing(onPing: () => void): () => void {
+        const delta = Date.now() - this.lastPingTime;
 
-//        if (this.currentlyDebouncing) {
-//            //Check time against debounceTime
+        // All logic below depends on getting the value of the parent stream, so we wrap it
+        // behind a 0-delay timeout
+        setTimeout(() => {
 
-//            // Need to wait a frame here
-//            const value = this.parentPipe.get();
-//            if (value instanceof PipeSignal) {
+            const value = this.parent.get();
 
-//            }
+            if (value instanceof PipeSignal) {
+                // Completely ignore non-value signals
+                return;
+            }
 
-//            this.allValuesSinceLastGet.push(this.parentPipe.get());
-//        }
-//    }
-//}
+            if (this.timeoutHandle > 0) {
+                clearTimeout(this.timeoutHandle);
+            }
+
+            if (delta > this.debounceTimeMs) {
+                this.bufferedValues = [value];
+            }
+            else {
+                this.bufferedValues.push(value);
+            }
+
+            this.timeoutHandle = setTimeout(() => this.subs.sendPing(), this.debounceTimeMs);
+
+        }, 0);
+
+    }
+
+    subscribePing(onPing: () => void): () => void {
+        return this.subs.subscribePing(onPing);
+    }
+}
 
 export class AccumulatingPipe<TIn, TState> extends Pipe<TState> {
 
