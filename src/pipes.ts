@@ -2,6 +2,17 @@ import { RecencyList } from "./RecencyList";
 
 function doNothing() { }
 
+type PipeInnerType<T extends Pipe<any>> = Parameters<Parameters<T['map']>[0]>[0];
+
+type LabeledPipes = { [index: string]: Pipe<any> };
+type CombinedLabeled<TTemplate extends LabeledPipes> = {
+    [k in keyof TTemplate]: PipeInnerType<TTemplate[k]>
+};
+
+type MergedLabeled<TTemplate extends LabeledPipes> = {
+    [k in keyof TTemplate]?: PipeInnerType<TTemplate[k]>
+};
+
 export class PipeSignal {
     static readonly noValue = new PipeSignal();
 
@@ -95,7 +106,7 @@ export abstract class Pipe<T> {
         return new FilterPipe<T>(this, predicate);
     }
 
-    map<TEnd>(projection: (value: T) => TEnd): Pipe<TEnd> {
+    map<TEnd>(projection: (value: T) => (TEnd | PipeSignal)): Pipe <TEnd> {
         return new MapPipe<T, TEnd>(this, projection);
     }
 
@@ -143,8 +154,13 @@ export abstract class Pipe<T> {
      * Returns a stream based on this one that is guaranteed to have a value at all times. Whenever this
      * stream has a value, that value is returned; otherwise, the given fallback value is returned.
      */
-    fallback(getFallbackValue: () => T): Pipe<T> {
+    fallback(getFallbackValue: () => T): Pipe<T>
+    {
         return new FallbackPipe(this, getFallbackValue);
+    }
+
+    fallbackValue(fixedFallbackValue: T): Pipe<T> {
+        return new FallbackPipe(this, () => fixedFallbackValue);
     }
 
     catch(handleError: (error: any) => void): Pipe<T>
@@ -188,20 +204,85 @@ export abstract class Pipe<T> {
         return promise;
     }
 
+    /**
+     * Returns a new pipe that checks the given condition against each value and throws an error if the value does not meet the condition.
+     * @param assertion
+     * @param failureMessage
+     */
+    assert(assertion: (value: T) => boolean, failureMessage: string | ((failedValue: T) => string)): Pipe<T> {
+        return new ConditionAssertingPipe(this, assertion, failureMessage);
+    }
+
+    /**
+     * Returns a new pipe whose value is the latest value sent by this pipe, modified by any transitions that
+     * were sent by the given pipe since the last new value. New values from this pipe will overwrite any transitions
+     * that have occurred.
+     * @param transitions
+     */
+    withTransitions(transitions: Pipe<(currentState: T) => T>): Pipe<T> {
+        return Pipe
+            .merge(
+                this.map(val => ({ value: val })),
+                transitions.map(t => ({ transition: t }))
+            )
+            .fold((last, event) => {
+                if ('transition' in event) {
+                    if (last.state instanceof PipeSignal) {
+                        return last;
+                    }
+                    else {
+                        return { state: event.transition(last.state), emit: true };
+                    }
+                }
+                else {
+                    return { state: event.value, emit: true }
+                }
+
+            }, { state: <PipeSignal | T>PipeSignal.noValue, emit: false })
+            .filter(o => o.emit)
+            .map(o => o.state)
+            .remember();
+    }
+
+    withUpdates<TUpdate>(updates: Pipe<TUpdate>, applyUpdate: (value: T, update: TUpdate) => T): Pipe<T> {
+        const transitions = updates.map(update => (value: T) => applyUpdate(value, update));
+        return this.withTransitions(transitions);
+    }
+
+    compose<TEnd>(transform: (thisPipe: Pipe<T>) => Pipe<TEnd>) {
+        return transform(this);
+    }
+
     static combine = function combine(...pipes: Array<Pipe<any>>) {
         return new CombinedPipe(pipes) as unknown;
     } as PipeCombineSignature
+
+    static combineLabeled<TTemplate extends LabeledPipes>(templateObj: TTemplate): Pipe<CombinedLabeled<TTemplate>> {
+        return new CombinedPipeLabeled(templateObj);
+    }
 
     static merge = function combine(...pipes: Array<Pipe<any>>) {
         return new MergedPipe(pipes) as unknown;
     } as PipeMergeSignature
 
-    static fromPromise = function fromPromise<T>(promise: PromiseLike<T>): Pipe<T> {
+    static mergeLabeled<TTemplate extends LabeledPipes>(templateObj: TTemplate): Pipe<MergedLabeled<TTemplate>> {
+        const pipesWithLabels = Object.keys(templateObj).map(key => templateObj[key].map(val => ({ [key]: val })))
+        return Pipe.merge(...pipesWithLabels) as Pipe<MergedLabeled<TTemplate>>;
+    }
+
+    static fromPromise<T>(promise: PromiseLike<T>): Pipe<T> {
         const state = new State<T>();
         promise.then(o => state.set(o));
 
         // TODO: Error handling?
         return state;
+    }
+
+    /**
+     * Creates a new collection of pipes that can have pipes added to or removed from it.
+     **/
+    static collection<T>() {
+        return new PipeCollection<T>();
     }
 }
 
@@ -332,8 +413,10 @@ export class State<T> extends Pipe<T> {
 
     subscribePing(onPing: () => void): () => void {
         if (this.value !== undefined) {
+            // If we have a value, immediately let new subscribers know it's available.
             onPing();
         }
+
         return this.subs.subscribePing(onPing);
     }
 
@@ -368,13 +451,12 @@ export class FilterPipe<T> extends Pipe<T> {
     subscribePing(onPing: () => void): () => void {
         return this.parent.subscribePing(onPing);
     }
-
 }
 
 export class MapPipe<TStart, TEnd> extends Pipe<TEnd> {
     constructor(
         private parent: Pipe<TStart>,
-        private projection: (value: TStart) => TEnd
+        private projection: (value: TStart) => (TEnd | PipeSignal)
     ) {
         super();
     }
@@ -484,6 +566,44 @@ export class CombinedPipe extends Pipe<Array<any>> {
         const allSubscriptions = this.pipes.map(p => p.subscribePing(onPing));
         return () => allSubscriptions.forEach(unsub => unsub());
     }
+}
+
+export class CombinedPipeLabeled<TTemplate extends LabeledPipes> extends Pipe<CombinedLabeled<TTemplate>> {
+
+    private template: LabeledPipes;
+
+    constructor(
+        templateObj: TTemplate
+    ) {
+        super();
+
+        this.template = {};
+        for (let key in templateObj) {
+            this.template[key] = templateObj[key].remember();
+        }
+    }
+
+    public get(): CombinedLabeled<TTemplate> | PipeSignal {
+        const result: { [key: string]: any } = {};
+
+        for (let key in this.template) {
+            const childValue = this.template[key].get();
+
+            if (childValue instanceof PipeSignal) {
+                return PipeSignal.noValue;
+            }
+
+            result[key] = childValue;
+        }
+
+        return result;
+    }
+
+    subscribePing(onPing: () => void): () => void {
+        const allSubscriptions = Object.values(this.template).map(p => p.subscribePing(onPing));
+        return () => allSubscriptions.forEach(unsub => unsub());
+    }
+
 }
 
 export class MergedPipe extends Pipe<any> {
@@ -829,6 +949,89 @@ export class AccumulatingPipe<TIn, TState> extends Pipe<TState> {
             this.isDirty = true;
             onPing();
         });
+    }
+}
+
+export class PipeCollection<T> extends Pipe<T> {
+    private pipes: Set<Pipe<T>>;
+    private mergedPipe: Pipe<T>
+    private subs: SubscriptionHolder;
+    private unsubscribe: () => void;
+
+    constructor() {
+        super();
+        this.pipes = new Set<Pipe<T>>();
+        this.subs = new SubscriptionHolder();
+        this.mergedPipe = Pipe.empty<T>();
+        this.unsubscribe = doNothing;
+    }
+
+    public get(): T | PipeSignal {
+        return this.mergedPipe.get();
+    }
+
+    subscribePing(onPing: () => void): () => void {
+        return this.subs.subscribePing(onPing);
+    }
+
+    public add(...pipesToAdd: Array<Pipe<T>>) {
+        for (let pipe of pipesToAdd) {
+            this.pipes.add(pipe);
+        }
+
+        this.remerge();
+    }
+
+    public remove(...pipesToRemove: Array<Pipe<T>>) {
+        for (let pipe of pipesToRemove) {
+            this.pipes.delete(pipe);
+        }
+
+        this.remerge();
+    }
+
+    private remerge() {
+        // Wait to unsubscribe from the existing stream. This helps prevent an unncessary cycle of shutoff/startup procedures by preventing
+        // the subscriber counts of upstream pipes from hitting 0.
+        const cleanup = this.unsubscribe;
+
+        this.mergedPipe = Pipe.merge(...this.pipes.values());
+        this.unsubscribe = this.subs.proxySubscribePing(this.mergedPipe, () => this.subs.sendPing());
+
+        cleanup();
+    }
+}
+
+export class ConditionAssertingPipe<T> extends Pipe<T> {
+    private getFailureMessage: ((failedValue: T) => string);
+    private sourceTrace: string | undefined;
+
+    constructor(
+        private parent: Pipe<T>,
+        private assertion: (item: T) => boolean,
+        failureMessage: string | ((failedValue: T) => string)
+    ) {
+        super();
+        this.getFailureMessage = (typeof failureMessage === 'string' ? (val => failureMessage) : failureMessage);
+        this.sourceTrace = new Error("\n---Source Trace---").stack;
+    }
+
+    public get(): T | PipeSignal {
+        const val = this.parent.get();
+
+        if (val instanceof PipeSignal) {
+            return val;
+        }
+        else if (!this.assertion(val)) {
+            throw new Error(`${this.getFailureMessage(val)}\n${this.sourceTrace}\n---Pipe Trace---`);
+        }
+        else {
+            return val;
+        }
+    }
+
+    subscribePing(onPing: () => void): () => void {
+        return this.subscribePing(onPing);
     }
 }
 
