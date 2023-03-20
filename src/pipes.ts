@@ -42,7 +42,7 @@ export abstract class Pipe<T> {
             return value;
         }
         else if (isPromise(value)) {
-            const state = new State<T>();
+            const state = State.new<T>();
             value.then(result => state.set(result));
             return state;
         }
@@ -65,7 +65,11 @@ export abstract class Pipe<T> {
     }
 
     static state<T>(initialValue?: T) {
-        return new State<T>(initialValue);
+        return State.new(initialValue);
+    }
+
+    static isPipe<T>(value: Pipe<T> | unknown): value is Pipe<T> {
+        return value instanceof Pipe;
     }
 
     // Gets the value in the pipe, or returns NoValue if no value is available.
@@ -77,7 +81,9 @@ export abstract class Pipe<T> {
     // This is mostly intended for 
     abstract subscribePing(onPing: () => void): () => void;
 
-    subscribe(listener: PipeListener<T>) {
+    subscribe(listener: PipeListener<T> | ((value: T) => void)) {
+
+        const sendValue = ("onValue" in listener) ? listener.onValue : listener;
 
         let valuePending = false;
 
@@ -86,7 +92,7 @@ export abstract class Pipe<T> {
             const newValue = this.get();
 
             if (!(newValue instanceof PipeSignal)) {
-                listener.onValue(newValue);
+                sendValue(newValue);
             }
         }
 
@@ -131,10 +137,6 @@ export abstract class Pipe<T> {
         return new FlatteningPipeConcurrent(this);
     }
 
-    startWith(startingValue: T): Pipe<T> {
-        return Pipe.merge(Pipe.fixed(startingValue), this);
-    }
-
     /*
      * Returns a pipe which reproduces the signals of this pipe after (roughly) the given number of millseconds.
      */
@@ -142,12 +144,12 @@ export abstract class Pipe<T> {
         return new DelayingPipe(this, milliseconds);
     }
 
-    debounce(milliseconds: number): Pipe<Array<T>> {
+    debounceGroup(milliseconds: number): Pipe<Array<T>> {
         return new DebouncingPipe(this, milliseconds);
     }
 
-    debounceLatest(milliseconds: number): Pipe<T> {
-        return this.debounce(milliseconds).map(values => values[values.length - 1]);
+    debounce(milliseconds: number): Pipe<T> {
+        return this.debounceGroup(milliseconds).map(values => values[values.length - 1]);
     }
 
     /*
@@ -221,21 +223,21 @@ export abstract class Pipe<T> {
      */
     withTransitions(transitions: Pipe<(currentState: T) => T>): Pipe<T> {
         return Pipe
-            .merge(
-                this.map(val => ({ value: val })),
-                transitions.map(t => ({ transition: t }))
-            )
+            .mergeLabeled({
+                value: this,
+                transition: transitions
+            })
             .fold((last, event) => {
                 if ('transition' in event) {
                     if (last.state instanceof PipeSignal) {
                         return last;
                     }
                     else {
-                        return { state: event.transition(last.state), emit: true };
+                        return { state: event.transition!(last.state), emit: true };
                     }
                 }
                 else {
-                    return { state: event.value, emit: true }
+                    return { state: event.value!, emit: true }
                 }
 
             }, { state: <PipeSignal | T>PipeSignal.noValue, emit: false })
@@ -249,9 +251,31 @@ export abstract class Pipe<T> {
         return this.withTransitions(transitions);
     }
 
-    compose<TEnd>(transform: (thisPipe: Pipe<T>) => Pipe<TEnd>) {
+    compose<TResult>(transform: (thisPipe: Pipe<T>) => TResult) {
         return transform(this);
     }
+
+    //fork(): State<T> {
+
+    //    const updates = State.new<T>();
+
+        
+    //    const thing = this.withUpdates(updates, (origVal, newVal) => newVal);
+    //    //Object.setPrototypeOf(thing, updates);
+
+    //    return <State<T>>thing;
+    //}
+
+    //stateMachine<TState>(onChange: (state: State<TState>, value: T) => void): Pipe<TState> {
+
+    //    const result = State.new<TState>();
+
+    //    const subs = new SubscriptionHolder();
+
+
+
+    //    return result;
+    //}
 
     static combine = function combine(...pipes: Array<Pipe<any>>) {
         return new CombinedPipe(pipes) as unknown;
@@ -271,11 +295,18 @@ export abstract class Pipe<T> {
     }
 
     static fromPromise<T>(promise: PromiseLike<T>): Pipe<T> {
-        const state = new State<T>();
-        promise.then(o => state.set(o));
+        const state = State.new<() => T>();
 
-        // TODO: Error handling?
-        return state;
+        promise.then(o => state.set(() => o));
+
+        if ('catch' in promise) {
+            (<Promise<T>>promise).catch(err => state.set(() => {
+                throw err;
+            }));
+        }
+
+        return state
+            .map(f => f());
     }
 
     /**
@@ -283,6 +314,10 @@ export abstract class Pipe<T> {
      **/
     static collection<T>() {
         return new PipeCollection<T>();
+    }
+
+    static producer<T>(activate: (send: (value: T) => void) => (() => void)): Pipe<T> {
+        return new ProducerPipe(activate);
     }
 }
 
@@ -389,30 +424,61 @@ export class SubscriptionHolder {
 
 export class State<T> extends Pipe<T> {
 
-    static from<T>(value: T) {
-        return new State<T>(value);
+    static new<T>(initialValue?: T) {
+        let value = initialValue;
+
+        return new State<T>(
+            //() => value === undefined ? PipeSignal.noValue : value,
+            () => value,
+            newValue => value = newValue
+        );
     }
 
     private subs: SubscriptionHolder;
 
     constructor(
-        private value?: T
+        //private value?: T
+        //private getFunc: () => T | PipeSignal,
+        private getFunc: () => T | undefined,
+        private setFunc: (newValue: T) => void
     ) {
         super();
         this.subs = new SubscriptionHolder();
     }
 
     public get(): T | PipeSignal {
-        return this.value === undefined ? PipeSignal.noValue : this.value;
+        const value = this.getFunc();
+        return value === undefined ? PipeSignal.noValue : value;
     }
 
     public set(newValue: T) {
-        this.value = newValue;
+        this.setFunc(newValue);
         this.subs.sendPing();
     }
 
+    /**
+     * Changes the value of this State object to a new value by applying the given transformation.
+     * If this State object has no current value, nothing happens -- the transform is not executed and the state is not changed.
+     */
+    update(transform: (currentValue: T) => T) {
+        // What do we do when we don't have any value yet? We have a few options:
+        // 1. Force the transform to explicitly deal with undefined. But this is an implementation detail: we could
+        //    just as easily have used a boolean to signify whether we had a value. So undefined should not leak out.
+        // 2. Pass undefined unsafely into the transform. This is just option 1 without the consumer knowing about it.
+        //    Not ideal.
+        // 3. Ignore updates when we have no value yet. The problem is calls like "update(_ => 7)", where the consumer
+        //    expects the value to just always get set to 7, regardless of our current state. But we do already have "set" for this.
+        // Option 3 seems best.
+
+        const currentVal = this.getFunc();
+
+        if (currentVal !== undefined) {
+            this.set(transform(currentVal));
+        }
+    }
+
     subscribePing(onPing: () => void): () => void {
-        if (this.value !== undefined) {
+        if (this.getFunc() !== undefined) {
             // If we have a value, immediately let new subscribers know it's available.
             onPing();
         }
@@ -420,7 +486,7 @@ export class State<T> extends Pipe<T> {
         return this.subs.subscribePing(onPing);
     }
 
-    public asPipe(): Pipe<T> {
+    asPipe(): Pipe<T> {
         return this;
     }
 }
@@ -464,7 +530,10 @@ export class MapPipe<TStart, TEnd> extends Pipe<TEnd> {
     public get(): TEnd | PipeSignal {
         const parentValue = this.parent.get();
 
-        if (parentValue instanceof PipeSignal) {
+        if (parentValue === undefined) {
+            return PipeSignal.noValue;
+        }
+        else if (parentValue instanceof PipeSignal) {
             return parentValue;
         }
         else {
@@ -966,7 +1035,7 @@ export class PipeCollection<T> extends Pipe<T> {
         this.unsubscribe = doNothing;
     }
 
-    public get(): T | PipeSignal {
+    get(): T | PipeSignal {
         return this.mergedPipe.get();
     }
 
@@ -974,7 +1043,7 @@ export class PipeCollection<T> extends Pipe<T> {
         return this.subs.subscribePing(onPing);
     }
 
-    public add(...pipesToAdd: Array<Pipe<T>>) {
+    add(...pipesToAdd: Array<Pipe<T>>) {
         for (let pipe of pipesToAdd) {
             this.pipes.add(pipe);
         }
@@ -982,7 +1051,7 @@ export class PipeCollection<T> extends Pipe<T> {
         this.remerge();
     }
 
-    public remove(...pipesToRemove: Array<Pipe<T>>) {
+    remove(...pipesToRemove: Array<Pipe<T>>) {
         for (let pipe of pipesToRemove) {
             this.pipes.delete(pipe);
         }
@@ -1002,6 +1071,56 @@ export class PipeCollection<T> extends Pipe<T> {
     }
 }
 
+/**
+ * Combines the functionality of State and PipeCollection to provide
+ * very general usage for sending or linking inputs
+ * */
+export class PipeInput<T = null> extends Pipe<T> {
+
+    private state: State<T>;
+    private collection: PipeCollection<T>;
+    private merged: Pipe<T>;
+
+    constructor(initialValue?: T) {
+        super();
+        this.state = State.new<T>(initialValue);
+        this.collection = new PipeCollection<T>();
+        this.merged = Pipe.merge(this.state, this.collection);
+    }
+
+    public get(): PipeSignal | T {
+        return this.merged.get();
+    }
+
+    subscribePing(onPing: () => void): () => void {
+        return this.merged.subscribePing(onPing);
+    }
+
+    add(...pipesToAdd: Array<Pipe<T>>) {
+        this.collection.add(...pipesToAdd);
+    }
+
+    remove(...pipesToRemove: Array<Pipe<T>>) {
+        this.collection.remove(...pipesToRemove);
+    }
+
+    set(newValue: T) {
+        this.state.set(newValue);
+    }
+
+    send(this: PipeInput<null>) {
+        this.state.set(null);
+    }
+
+    asPipe(): Pipe<T> {
+        return this;
+    }
+
+    static new<T>(initialValue?: T) {
+        return new PipeInput<T>(initialValue);
+    }
+}
+
 export class ConditionAssertingPipe<T> extends Pipe<T> {
     private getFailureMessage: ((failedValue: T) => string);
     private sourceTrace: string | undefined;
@@ -1016,7 +1135,7 @@ export class ConditionAssertingPipe<T> extends Pipe<T> {
         this.sourceTrace = new Error("\n---Source Trace---").stack;
     }
 
-    public get(): T | PipeSignal {
+    get(): T | PipeSignal {
         const val = this.parent.get();
 
         if (val instanceof PipeSignal) {
@@ -1032,6 +1151,43 @@ export class ConditionAssertingPipe<T> extends Pipe<T> {
 
     subscribePing(onPing: () => void): () => void {
         return this.subscribePing(onPing);
+    }
+}
+
+export class ProducerPipe<T> extends Pipe<T> {
+    private subs: SubscriptionHolder;
+    private deactivate: () => void;
+    private currentValue: T;
+
+    constructor(
+        public activate: (send: (value: T) => void) => (() => void)
+    ) {
+        super();
+        this.subs = new SubscriptionHolder();
+        this.subs.proxyLink(
+            () => {
+                this.deactivate = activate(val => this.newValue(val));
+            },
+            () => {
+                this.deactivate();
+                this.currentValue = undefined;
+            });
+    }
+
+    private newValue(value: T) {
+        this.currentValue = value;
+    }
+
+    public get(): T | PipeSignal {
+        if (this.currentValue === undefined) {
+            return PipeSignal.noValue;
+        }
+
+        return this.currentValue;
+    }
+
+    subscribePing(onPing: () => void): () => void {
+        return this.subs.subscribePing(onPing);
     }
 }
 
