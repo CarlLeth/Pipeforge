@@ -271,17 +271,6 @@ export abstract class Pipe<T> {
     //    return <State<T>>thing;
     //}
 
-    //stateMachine<TState>(onChange: (state: State<TState>, value: T) => void): Pipe<TState> {
-
-    //    const result = State.new<TState>();
-
-    //    const subs = new SubscriptionHolder();
-
-
-
-    //    return result;
-    //}
-
     static combine = function combine(...pipes: Array<Pipe<any>>) {
         return new CombinedPipe(pipes) as unknown;
     } as PipeCombineSignature
@@ -323,6 +312,14 @@ export abstract class Pipe<T> {
 
     static producer<T>(activate: (send: SendSignal<T>) => ShutdownFunction): Pipe<T> {
         return new ProducerPipe(activate);
+    }
+
+    static action<T = null>(): Action<T> {
+        return new Action<T>();
+    }
+
+    static input<T>(initialValue?: T) {
+        return new PipeInput<T>(initialValue);
     }
 }
 
@@ -1162,7 +1159,7 @@ export class ConditionAssertingPipe<T> extends Pipe<T> {
 export class ProducerPipe<T> extends Pipe<T> {
     private subs: SubscriptionHolder;
     private deactivate: () => void;
-    private currentValue: T | PipeSignal | undefined;
+    private lastValue: T | PipeSignal | undefined;
 
     constructor(
         public activate: (send: SendSignal<T>) => ShutdownFunction
@@ -1177,27 +1174,69 @@ export class ProducerPipe<T> extends Pipe<T> {
             },
             () => {
                 this.deactivate();
-                this.currentValue = undefined;
+                this.lastValue = undefined;
             }
         );
     }
 
     private send(value: T | PipeSignal) {
-        this.currentValue = value;
+        this.lastValue = value;
         this.subs.sendPing();
     }
 
     public get(): T | PipeSignal {
-        if (this.currentValue === undefined) {
+        if (this.lastValue === undefined) {
             return PipeSignal.noValue;
         }
 
-        return this.currentValue;
+        return this.lastValue;
     }
 
     subscribePing(onPing: () => void): () => void {
         return this.subs.subscribePing(onPing);
     }
+}
+
+export class Action<T = null> extends Pipe<T> {
+    private subs: SubscriptionHolder;
+    private lastValue: T | PipeSignal | undefined;
+
+    constructor() {
+        super();
+        this.subs = new SubscriptionHolder();
+
+        // If all subscriptions to this action are closed, we want to forget the last value sent.
+        this.subs.proxyLink(
+            () => { },
+            () => {
+                this.lastValue = undefined;
+            }
+        );
+    }
+
+    call(this: Action<null>): void;
+    call(this: Action<T>, value: T): void;
+    call(this: Action<any>, value?: T | undefined) {
+        if (value === undefined) {
+            // A lastValue of undefined indicates no signal has been sent yet.
+            // We use null for cases where the signal is important, but there's no specific value.
+            this.lastValue = null;
+        }
+        else {
+            this.lastValue = value;
+        }
+
+        this.subs.sendPing();
+    }
+
+    public get(): T | PipeSignal {
+        return (this.lastValue === undefined) ? PipeSignal.noValue : this.lastValue;
+    }
+
+    subscribePing(onPing: () => void): () => void {
+        return this.subs.subscribePing(onPing);
+    }
+
 }
 
 export interface PipeCombineSignature {
