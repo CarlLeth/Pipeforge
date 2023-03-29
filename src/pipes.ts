@@ -15,6 +15,11 @@ type MergedLabeled<TTemplate extends LabeledPipes> = {
 
 type ShutdownFunction = () => void;
 
+interface Lens<TContext, TFocus> {
+    get(context: TContext): TFocus;
+    set(value: TFocus): (context: TContext) => TContext;
+}
+
 export class PipeSignal {
     static readonly noValue = new PipeSignal();
 
@@ -117,7 +122,7 @@ export abstract class Pipe<T> {
         return new FilterPipe<T>(this, predicate);
     }
 
-    map<TEnd>(projection: (value: T) => (TEnd | PipeSignal)): Pipe <TEnd> {
+    map<TEnd>(projection: (value: T) => (TEnd | PipeSignal)): Pipe<TEnd> {
         return new MapPipe<T, TEnd>(this, projection);
     }
 
@@ -180,15 +185,25 @@ export abstract class Pipe<T> {
      * Opens a subscription to this stream which performs the given action when a value is available, and then closes itself.
      * This treats the stream as if it were a promise. Note that if this stream never emits a value, the subscription is never removed.
      */
-    once(doOnce: (value: T) => void) {
+    doOnce(action: (value: T) => void) {
         let unsubscribe = doNothing;
 
         unsubscribe = this.subscribe({
             onValue: val => {
                 unsubscribe();
-                doOnce(val);
+                action(val);
             }
         });
+    }
+
+    dropRepeats(equals?: (a: T, b: T) => boolean): Pipe<T> {
+        if (!equals) {
+            equals = (a, b) => a === b;
+        }
+
+        return this
+            .fold((last, next) => (last !== undefined && equals!(last, next)) ? undefined : next, <T | undefined>undefined)
+            .filter(o => o !== undefined) as Pipe<T>;
     }
 
     asPromise(): Promise<T> {
@@ -204,7 +219,7 @@ export abstract class Pipe<T> {
         this.catch(err => {
             reject(err);
             unsubscribe();
-        }).once(val => {
+        }).doOnce(val => {
             resolve(val);
         });
 
@@ -264,12 +279,33 @@ export abstract class Pipe<T> {
 
     //    const updates = State.new<T>();
 
-        
+
     //    const thing = this.withUpdates(updates, (origVal, newVal) => newVal);
     //    //Object.setPrototypeOf(thing, updates);
 
     //    return <State<T>>thing;
     //}
+
+    sampleCombine<T2>(addonPipe: Pipe<T2>): Pipe<[T, T2]> {
+        return Pipe
+            .mergeLabeled({ sample: this, addon: addonPipe })
+            .fold((state, next) => {
+                if ('sample' in next) {
+                    return {
+                        emit: true,
+                        data: <[T, T2]>[next.sample, state.data[1]]
+                    };
+                }
+                else {
+                    return {
+                        emit: false,
+                        data: <[T, T2]>[state.data[0], next.addon]
+                    }
+                }
+            }, { emit: false, data: <[T | undefined, T2 | undefined]>[undefined, undefined] })
+            .filter(o => o.emit && o.data[0] !== undefined && o.data[1] !== undefined)
+            .map(o => o.data as [T, T2]);
+    }
 
     static combine = function combine(...pipes: Array<Pipe<any>>) {
         return new CombinedPipe(pipes) as unknown;
@@ -320,6 +356,13 @@ export abstract class Pipe<T> {
 
     static input<T>(initialValue?: T) {
         return new PipeInput<T>(initialValue);
+    }
+
+    static periodic(periodMs: number): Pipe<null> {
+        return Pipe.producer(send => {
+            const handle = window.setInterval(send, periodMs);
+            return () => window.clearInterval(handle);
+        });
     }
 }
 
@@ -432,20 +475,19 @@ export class State<T> extends Pipe<T> {
         return new State<T>(
             //() => value === undefined ? PipeSignal.noValue : value,
             () => value,
-            newValue => value = newValue
+            newValue => value = newValue,
+            new SubscriptionHolder()
         );
     }
-
-    private subs: SubscriptionHolder;
 
     constructor(
         //private value?: T
         //private getFunc: () => T | PipeSignal,
         private getFunc: () => T | undefined,
-        private setFunc: (newValue: T) => void
+        private setFunc: (newValue: T) => void,
+        private subs: SubscriptionHolder
     ) {
         super();
-        this.subs = new SubscriptionHolder();
     }
 
     public get(): T | PipeSignal {
@@ -479,6 +521,11 @@ export class State<T> extends Pipe<T> {
         }
     }
 
+    // Alias of "update"
+    modify(transform: (currentValue: T) => T) {
+        this.update(transform);
+    }
+
     subscribePing(onPing: () => void): () => void {
         if (this.getFunc() !== undefined) {
             // If we have a value, immediately let new subscribers know it's available.
@@ -490,6 +537,14 @@ export class State<T> extends Pipe<T> {
 
     asPipe(): Pipe<T> {
         return this;
+    }
+
+    focus<TFocus>(lens: Lens<T, TFocus>): State<TFocus> {
+        return new State(
+            () => lens.get(this.get() as T),
+            focusVal => lens.set(focusVal),
+            this.subs
+        );
     }
 }
 
