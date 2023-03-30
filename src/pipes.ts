@@ -360,7 +360,7 @@ export abstract class Pipe<T> {
 
     static periodic(periodMs: number): Pipe<null> {
         return Pipe.producer(send => {
-            const handle = window.setInterval(send, periodMs);
+            const handle = window.setInterval(() => send(null), periodMs);
             return () => window.clearInterval(handle);
         });
     }
