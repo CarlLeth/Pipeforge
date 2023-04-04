@@ -473,31 +473,35 @@ export class State<T> extends Pipe<T> {
         let value = initialValue;
 
         return new State<T>(
-            //() => value === undefined ? PipeSignal.noValue : value,
             () => value,
             newValue => value = newValue,
             new SubscriptionHolder()
         );
     }
 
+    public set: (newValue: T) => void;
+
     constructor(
-        //private value?: T
-        //private getFunc: () => T | PipeSignal,
         private getFunc: () => T | undefined,
         private setFunc: (newValue: T) => void,
         private subs: SubscriptionHolder
     ) {
         super();
+
+        // This is defined here in order to bind it to "this", so it can be used point-free.
+        // For example, { onclick: state.set }, instead of { onclick: e => state.set(e) }
+        this.set = val => {
+            this.setFunc(val);
+            this.subs.sendPing();
+        };
+
+        // Need this?
+        this.set = this.set.bind(this);
     }
 
     public get(): T | PipeSignal {
         const value = this.getFunc();
         return value === undefined ? PipeSignal.noValue : value;
-    }
-
-    public set(newValue: T) {
-        this.setFunc(newValue);
-        this.subs.sendPing();
     }
 
     /**
@@ -512,13 +516,13 @@ export class State<T> extends Pipe<T> {
         //    Not ideal.
         // 3. Ignore updates when we have no value yet. The problem is calls like "update(_ => 7)", where the consumer
         //    expects the value to just always get set to 7, regardless of our current state. But we do already have "set" for this.
-        // Option 3 seems best.
+        // Trying out Option 2 as a balance between the two.
 
         const currentVal = this.getFunc();
 
-        if (currentVal !== undefined) {
-            this.set(transform(currentVal));
-        }
+        //if (currentVal !== undefined) {Z
+        this.set(transform(currentVal));
+        //}
     }
 
     // Alias of "update"
@@ -542,7 +546,7 @@ export class State<T> extends Pipe<T> {
     focus<TFocus>(lens: Lens<T, TFocus>): State<TFocus> {
         return new State(
             () => lens.get(this.get() as T),
-            focusVal => lens.set(focusVal),
+            focusVal => this.update(lens.set(focusVal)),
             this.subs
         );
     }
