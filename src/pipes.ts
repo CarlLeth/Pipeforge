@@ -982,6 +982,7 @@ export class DebouncingPipe<T> extends Pipe<Array<T>> {
     private timeoutHandle: number;
     private bufferedValues: Array<T>;
     private subs: SubscriptionHolder;
+    private isPending: boolean;
 
     constructor(
         private parent: Pipe<T>,
@@ -993,6 +994,7 @@ export class DebouncingPipe<T> extends Pipe<Array<T>> {
         this.timeoutHandle = 0;
         this.subs = new SubscriptionHolder();
         this.subs.proxySubscribePing(parent, () => this.onParentPing());
+        this.isPending = false;
     }
 
     public get(): T[] | PipeSignal {
@@ -1001,12 +1003,19 @@ export class DebouncingPipe<T> extends Pipe<Array<T>> {
 
     private onParentPing() {
 
+        if (this.isPending) {
+            return;
+        }
+
         const delta = Date.now() - this.lastPingTime;
         this.lastPingTime = Date.now();
+        this.isPending = true;
 
         // All logic below depends on getting the value of the parent stream, so we wrap it
         // behind a 0-delay timeout
         setTimeout(() => {
+
+            this.isPending = false;
 
             const value = this.parent.get();
 
@@ -1016,7 +1025,7 @@ export class DebouncingPipe<T> extends Pipe<Array<T>> {
             }
 
             if (this.timeoutHandle > 0) {
-                clearTimeout(this.timeoutHandle);
+                window.clearTimeout(this.timeoutHandle);
                 this.timeoutHandle = 0;
             }
 
@@ -1029,6 +1038,7 @@ export class DebouncingPipe<T> extends Pipe<Array<T>> {
 
             // The TS compiler doesn't get the return type right without "window." here; confusing it with a different setTimeout method?
             this.timeoutHandle = window.setTimeout(() => this.subs.sendPing(), this.debounceTimeMs);
+
         }, 0);
 
     }
