@@ -46,6 +46,8 @@ function isPromise(value: any): value is PromiseLike<any> {
 
 export abstract class Pipe<T> {
 
+    static debugMode = false;
+
     static asPipe<T>(value: Pipe<T> | PromiseLike<T> | T | undefined): Pipe<T> {
         if (value === undefined) {
             return Pipe.empty<T>();
@@ -314,20 +316,6 @@ export abstract class Pipe<T> {
             .map(o => o.data as [T, T2]);
     }
 
-    //toString(): string {
-    //    let constructorName = this.constructor.name ?? "";
-    //    if (constructorName.endsWith('Pipe')) {
-    //        constructorName = constructorName.substr(0, constructorName.length - 4); 
-    //    }
-
-    //    if (this.debugTag) {
-    //        return `${this.debugTag} (${constructorName})`;
-    //    }
-    //    else {
-    //        return constructorName;
-    //    }
-    //}
-
     static combine = function combine(...pipes: Array<Pipe<any>>) {
         return new CombinedPipe(pipes) as unknown;
     } as PipeCombineSignature
@@ -384,6 +372,12 @@ export abstract class Pipe<T> {
             const handle = window.setInterval(() => send(null), periodMs);
             return () => window.clearInterval(handle);
         });
+    }
+
+    protected debug(message: string) {
+        if (Pipe.debugMode) {
+            console.log(message, this);
+        }
     }
 }
 
@@ -570,6 +564,8 @@ export class State<T> extends Pipe<T> {
     }
 
     subscribePing(onPing: () => void, trace: TraceFunction<T>): () => void {
+        this.debug("Subscribing");
+
         if (this.getFunc() !== undefined) {
             // If we have a value, immediately let new subscribers know it's available.
             onPing();
@@ -621,6 +617,7 @@ export class FilterPipe<T> extends Pipe<T> {
     get hasMemory() { return false; }
 
     subscribePing(onPing: () => void, trace: TraceFunction<T>): () => void {
+        this.debug("Subscribing");
         return this.source.subscribePing(onPing, () => [this, ...trace()]);
     }
 }
@@ -650,6 +647,7 @@ export class MapPipe<TSource, TEnd> extends Pipe<TEnd> {
     get hasMemory() { return false; }
 
     subscribePing(onPing: () => void, trace: TraceFunction<TEnd>): () => void {
+        this.debug("Subscribing");
         return this.source.subscribePing(onPing, () => [this, ...trace()]);
     }
 }
@@ -691,6 +689,8 @@ export class MemoryPipe<T> extends Pipe<T> {
     get hasMemory() { return true; }
 
     subscribePing(onPing: () => void, trace: TraceFunction<T>): () => void {
+        this.debug("Subscribing");
+
         if (this.hasValue) {
             // Let the subscriber know a value is immediately available.
             onPing();
@@ -743,6 +743,8 @@ export class CombinedPipe extends Pipe<Array<any>> {
     get hasMemory() { return false; }
 
     subscribePing(onPing: () => void, trace: TraceFunction<Array<any>>): () => void {
+        this.debug("Subscribing");
+
         const allSubscriptions = this.pipes.map(p => p.subscribePing(onPing, () => [this, ...trace()]));
         return () => allSubscriptions.forEach(unsub => unsub());
     }
@@ -782,6 +784,8 @@ export class CombinedPipeLabeled<TTemplate extends LabeledPipes> extends Pipe<Co
     get hasMemory() { return false; }
 
     subscribePing(onPing: () => void, trace: TraceFunction<CombinedLabeled<TTemplate>>): () => void {
+        this.debug("Subscribing");
+
         const allSubscriptions = Object.values(this.template).map(p => p.subscribePing(onPing, () => [this, ...trace()]));
         return () => allSubscriptions.forEach(unsub => unsub());
     }
@@ -809,6 +813,8 @@ export class MergedPipe extends Pipe<any> {
     get hasMemory() { return false; }
 
     subscribePing(onPing: () => void, trace: TraceFunction<any>): () => void {
+        this.debug("Subscribing");
+
         const allSubscriptions = this.recentPipes.items.map(p => p.subscribePing(
             () => {
                 this.recentPipes.setHead(p);
@@ -835,6 +841,8 @@ export class FixedPipe<T> extends Pipe<T> {
     get hasMemory() { return true; }
 
     subscribePing(onPing: () => void, trace: TraceFunction<T>): () => void {
+        this.debug("Subscribing");
+
         // Let the subscriber know a value is immediately available.
         onPing();
         return doNothing;
@@ -849,6 +857,7 @@ export class EmptyPipe<T> extends Pipe<T> {
     get hasMemory() { return true; }
 
     subscribePing(onPing: () => void, trace: TraceFunction<T>): () => void {
+        this.debug("Subscribing");
         return doNothing;
     }
 }
@@ -862,10 +871,10 @@ export class FlatteningPipe<T> extends Pipe<T> {
     private readonly subs: SubscriptionHolder;
 
     constructor(
-        parentPipeOfPipes: Pipe<Pipe<T>>
+        sourcePipeOfPipes: Pipe<Pipe<T>>
     ) {
         super();
-        this.source = parentPipeOfPipes.remember();
+        this.source = sourcePipeOfPipes.remember();
         this.subs = new SubscriptionHolder();
         this.unsubscribe = doNothing;
         this.lastPipe = null;
@@ -893,6 +902,7 @@ export class FlatteningPipe<T> extends Pipe<T> {
     get hasMemory() { return false; }
 
     subscribePing(onPing: () => void, trace: TraceFunction<T>): () => void {
+        this.debug("Subscribing");
         return this.subs.subscribePing(onPing, trace);
     }
 
@@ -902,27 +912,22 @@ export class FlatteningPipe<T> extends Pipe<T> {
 }
 
 export class FlatteningPipeConcurrent<T> extends Pipe<T> {
-
-    private seenPipes: Set<Pipe<T>>;
-    private unsubscribeFuncs: Array<() => void>;
-
     public readonly source: Pipe<Pipe<T>>;
-    private readonly subs: SubscriptionHolder;
+    private readonly seenPipes: PipeCollection<T>;
 
     constructor(
-        parentPipeOfPipes: Pipe<Pipe<T>>
+        sourcePipeOfPipes: Pipe<Pipe<T>>
     ) {
         super();
-        this.source = parentPipeOfPipes.remember();
-        this.subs = new SubscriptionHolder();
-        this.unsubscribeFuncs = [];
-        this.seenPipes = new Set<Pipe<T>>();
+        this.source = sourcePipeOfPipes.remember();
+        this.seenPipes = new PipeCollection();
 
         // This doesn't need to be unsubscribed from because the subscribed object has the same lifetime as the subscribing.
-        this.subs.proxySubscribePing(this.source, () => this.subs.sendPing(), () => [this]);
+        this.seenPipes.subs.proxySubscribePing(this.source, () => this.seenPipes.subs.sendPing(), () => [this]);
     }
 
     public get(): T | PipeSignal {
+
         const currentPipe = this.source.get();
 
         if (currentPipe instanceof PipeSignal) {
@@ -931,20 +936,20 @@ export class FlatteningPipeConcurrent<T> extends Pipe<T> {
 
         if (!this.seenPipes.has(currentPipe)) {
             this.seenPipes.add(currentPipe);
-            this.unsubscribeFuncs.push(currentPipe.subscribePing(() => this.subs.sendPing(), () => [this, ...this.subs.trace()]));
         }
 
-        return currentPipe.get();
+        return this.seenPipes.get();
     }
 
     get hasMemory() { return false; }
 
     subscribePing(onPing: () => void, trace: TraceFunction<T>): () => void {
-        return this.subs.subscribePing(onPing, trace);
+        this.debug("Subscribing");
+        return this.seenPipes.subscribePing(onPing, trace);
     }
 
     trace() {
-        return [this, ...this.subs.trace()];
+        return [this, ...this.seenPipes.trace()];
     }
 }
 
@@ -954,21 +959,21 @@ export class DelayingPipe<T> extends Pipe<T> {
     private readonly subs: SubscriptionHolder;
 
     constructor(
-        private parent: Pipe<T>,
+        private source: Pipe<T>,
         private delayMilliseconds: number
     ) {
         super();
         this.currentSignal = PipeSignal.noValue;
         this.subs = new SubscriptionHolder();
-        this.subs.proxySubscribePing(parent, () => this.onParentPing(), () => [this]);
+        this.subs.proxySubscribePing(source, () => this.onSourcePing(), () => [this]);
     }
 
-    private onParentPing() {
+    private onSourcePing() {
         let lastSignal: T | PipeSignal;
 
         // Get the value on the next frame, but wait to update it.
         setTimeout(() => {
-            lastSignal = this.parent.get();
+            lastSignal = this.source.get();
         }, 0);
 
         // Wait to update the current signal value and send a ping synchronously.
@@ -990,6 +995,7 @@ export class DelayingPipe<T> extends Pipe<T> {
     }
 
     subscribePing(onPing: () => void, trace: TraceFunction<T>): () => void {
+        this.debug("Subscribing");
         return this.subs.subscribePing(onPing, trace);
     }
 
@@ -1020,13 +1026,14 @@ export class FallbackPipe<T> extends Pipe<T> {
     get hasMemory() { return false; }
 
     subscribePing(onPing: () => void, trace: TraceFunction<T>): () => void {
+        this.debug("Subscribing");
         return this.source.subscribePing(onPing, () => [this, ...trace()]);
     }
 }
 
 export class ErrorCatchingPipe<T, TError> extends Pipe<T | TError> {
     constructor(
-        private parent: Pipe<T>,
+        private source: Pipe<T>,
         private onError: (err: any) => TError | PipeSignal | undefined | void
     ) {
         super();
@@ -1034,7 +1041,7 @@ export class ErrorCatchingPipe<T, TError> extends Pipe<T | TError> {
 
     public get(): T | TError | PipeSignal {
         try {
-            return this.parent.get();
+            return this.source.get();
         } catch (err) {
 
             let replacement = this.onError(err);
@@ -1049,7 +1056,8 @@ export class ErrorCatchingPipe<T, TError> extends Pipe<T | TError> {
     get hasMemory() { return false; }
 
     subscribePing(onPing: () => void, trace: TraceFunction<T>): () => void {
-        return this.parent.subscribePing(onPing, () => [this, ...trace()]);
+        this.debug("Subscribing");
+        return this.source.subscribePing(onPing, () => [this, ...trace()]);
     }
 }
 
@@ -1062,7 +1070,7 @@ export class DebouncingPipe<T> extends Pipe<Array<T>> {
     private isPending: boolean;
 
     constructor(
-        private parent: Pipe<T>,
+        private source: Pipe<T>,
         private debounceTimeMs: number
     ) {
         super();
@@ -1070,7 +1078,7 @@ export class DebouncingPipe<T> extends Pipe<Array<T>> {
         this.lastPingTime = 0;
         this.timeoutHandle = 0;
         this.subs = new SubscriptionHolder();
-        this.subs.proxySubscribePing(parent, () => this.onParentPing(), () => [this]);
+        this.subs.proxySubscribePing(source, () => this.onSourcePing(), () => [this]);
         this.isPending = false;
     }
 
@@ -1080,7 +1088,7 @@ export class DebouncingPipe<T> extends Pipe<Array<T>> {
 
     get hasMemory() { return false; }
 
-    private onParentPing() {
+    private onSourcePing() {
 
         if (this.isPending) {
             return;
@@ -1090,13 +1098,13 @@ export class DebouncingPipe<T> extends Pipe<Array<T>> {
         this.lastPingTime = Date.now();
         this.isPending = true;
 
-        // All logic below depends on getting the value of the parent stream, so we wrap it
+        // All logic below depends on getting the value of the source stream, so we wrap it
         // behind a 0-delay timeout
         setTimeout(() => {
 
             this.isPending = false;
 
-            const value = this.parent.get();
+            const value = this.source.get();
 
             if (value instanceof PipeSignal) {
                 // Completely ignore non-value signals
@@ -1123,6 +1131,7 @@ export class DebouncingPipe<T> extends Pipe<Array<T>> {
     }
 
     subscribePing(onPing: () => void, trace: TraceFunction<T>): () => void {
+        this.debug("Subscribing");
         return this.subs.subscribePing(onPing, trace);
     }
 
@@ -1137,7 +1146,7 @@ export class AccumulatingPipe<TIn, TState> extends Pipe<TState> {
     private currentValue: TState;
 
     constructor(
-        private parentPipe: Pipe<TIn>,
+        private sourcePipe: Pipe<TIn>,
         private accumulate: (state: TState, value: TIn) => TState,
         seed: TState
     ) {
@@ -1152,7 +1161,7 @@ export class AccumulatingPipe<TIn, TState> extends Pipe<TState> {
         }
 
         this.isDirty = false;
-        const newValue = this.parentPipe.get();
+        const newValue = this.sourcePipe.get();
 
         if (newValue instanceof PipeSignal) {
             return this.currentValue;
@@ -1166,11 +1175,13 @@ export class AccumulatingPipe<TIn, TState> extends Pipe<TState> {
     get hasMemory() { return true; }
 
     subscribePing(onPing: () => void, trace: TraceFunction<TState>): () => void {
+        this.debug("Subscribing");
+
         if (this.currentValue !== undefined) {
             onPing();
         }
 
-        return this.parentPipe.subscribePing(() => {
+        return this.sourcePipe.subscribePing(() => {
             this.isDirty = true;
             onPing();
         }, () => [this, ...trace()]);
@@ -1180,7 +1191,7 @@ export class AccumulatingPipe<TIn, TState> extends Pipe<TState> {
 export class PipeCollection<T> extends Pipe<T> {
     private pipes: Set<Pipe<T>>;
     private mergedPipe: Pipe<T>
-    private subs: SubscriptionHolder;
+    public readonly subs: SubscriptionHolder;
     private unsubscribe: () => void;
 
     constructor() {
@@ -1198,6 +1209,7 @@ export class PipeCollection<T> extends Pipe<T> {
     get hasMemory() { return false; }
 
     subscribePing(onPing: () => void, trace: TraceFunction<T>): () => void {
+        this.debug("Subscribing");
         return this.subs.subscribePing(onPing, trace);
     }
 
@@ -1207,6 +1219,10 @@ export class PipeCollection<T> extends Pipe<T> {
         }
 
         this.remerge();
+    }
+
+    has(pipe: Pipe<T>) {
+        return this.pipes.has(pipe);
     }
 
     remove(...pipesToRemove: Array<Pipe<T>>) {
@@ -1257,6 +1273,7 @@ export class PipeInput<T = null> extends Pipe<T> {
     get hasMemory() { return false; }
 
     subscribePing(onPing: () => void, trace: TraceFunction<T>): () => void {
+        this.debug("Subscribing");
         return this.merged.subscribePing(onPing, () => [this, ...trace()]);
     }
 
@@ -1295,7 +1312,7 @@ export class ConditionAssertingPipe<T> extends Pipe<T> {
     private sourceTrace: string | undefined;
 
     constructor(
-        private parent: Pipe<T>,
+        private source: Pipe<T>,
         private assertion: (item: T) => boolean,
         failureMessage: string | ((failedValue: T) => string)
     ) {
@@ -1305,7 +1322,7 @@ export class ConditionAssertingPipe<T> extends Pipe<T> {
     }
 
     get(): T | PipeSignal {
-        const val = this.parent.get();
+        const val = this.source.get();
 
         if (val instanceof PipeSignal) {
             return val;
@@ -1321,6 +1338,7 @@ export class ConditionAssertingPipe<T> extends Pipe<T> {
     get hasMemory() { return false; }
 
     subscribePing(onPing: () => void, trace: TraceFunction<T>): () => void {
+        this.debug("Subscribing");
         return this.subscribePing(onPing, () => [this, ...trace()]);
     }
 }
@@ -1364,6 +1382,7 @@ export class ProducerPipe<T> extends Pipe<T> {
     get hasMemory() { return false; }
 
     subscribePing(onPing: () => void, trace: TraceFunction<T>): () => void {
+        this.debug("Subscribing");
         return this.subs.subscribePing(onPing, trace);
     }
 
@@ -1411,6 +1430,7 @@ export class Action<T = null> extends Pipe<T> {
     get hasMemory() { return false; }
 
     subscribePing(onPing: () => void, trace: TraceFunction<T>): () => void {
+        this.debug("Subscribing");
         return this.subs.subscribePing(onPing, trace);
     }
 
