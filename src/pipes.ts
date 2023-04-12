@@ -114,7 +114,7 @@ export abstract class Pipe<T> {
             }
         }
 
-        return this.subscribePing(onPing, () => []);
+        return this.subscribePing(onPing, () => [listener]);
 
         function onPing() {
             if (valuePending) {
@@ -415,6 +415,10 @@ export class SubscriptionHolder {
         this.nextIndex++;
 
         return () => {
+            if (Pipe.debugMode) {
+                console.log("Unsubscribing: ", this.trace());
+            }
+
             delete this.subscribers[subscriberIndex];
             delete this.tracers[subscriberIndex];
             if (!this.any()) {
@@ -623,32 +627,51 @@ export class FilterPipe<T> extends Pipe<T> {
 }
 
 export class MapPipe<TSource, TEnd> extends Pipe<TEnd> {
+    private lastResult: TEnd | PipeSignal;
+    private isDirty: boolean;
+
     constructor(
         public readonly source: Pipe<TSource>,
         public readonly projection: (value: TSource) => (TEnd | PipeSignal)
     ) {
         super();
+        this.isDirty = true;
     }
 
     public get(): TEnd | PipeSignal {
+        if (!this.isDirty) {
+            return this.lastResult;
+        }
+
+        this.isDirty = false;
+
         const sourceValue = this.source.get();
 
         if (sourceValue === undefined) {
-            return PipeSignal.noValue;
+            this.lastResult = PipeSignal.noValue;
         }
         else if (sourceValue instanceof PipeSignal) {
-            return sourceValue;
+            this.lastResult = sourceValue;
         }
         else {
-            return this.projection(sourceValue);
+            this.lastResult = this.projection(sourceValue);
         }
+
+        return this.lastResult;
     }
 
     get hasMemory() { return false; }
 
     subscribePing(onPing: () => void, trace: TraceFunction<TEnd>): () => void {
         this.debug("Subscribing");
-        return this.source.subscribePing(onPing, () => [this, ...trace()]);
+        return this.source.subscribePing(
+            () => {
+                this.isDirty = true;
+                this.lastResult = undefined;
+                onPing();
+            },
+            () => [this, ...trace()]
+        );
     }
 }
 
