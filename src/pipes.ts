@@ -48,6 +48,18 @@ export abstract class Pipe<T> {
 
     static debugMode = false;
 
+    private readonly constructedAt;
+
+    constructor() {
+        if (Pipe.debugMode) {
+            this.constructedAt = new Error("constructed");
+        }
+    }
+
+    getConstructionStack() {
+        return this.constructedAt;
+    }
+
     static asPipe<T>(value: Pipe<T> | PromiseLike<T> | T | undefined): Pipe<T> {
         if (value === undefined) {
             return Pipe.empty<T>();
@@ -375,9 +387,9 @@ export abstract class Pipe<T> {
     }
 
     protected debug(message: string) {
-        if (Pipe.debugMode) {
-            console.log(message, this);
-        }
+        //if (Pipe.debugMode) {
+        //    console.log(message, this);
+        //}
     }
 }
 
@@ -415,9 +427,9 @@ export class SubscriptionHolder {
         this.nextIndex++;
 
         return () => {
-            if (Pipe.debugMode) {
-                console.log("Unsubscribing: ", this.trace());
-            }
+            //if (Pipe.debugMode) {
+            //    console.log("Unsubscribing: ", this.trace());
+            //}
 
             delete this.subscribers[subscriberIndex];
             delete this.tracers[subscriberIndex];
@@ -504,6 +516,9 @@ export class SubscriptionHolder {
 
 export class State<T> extends Pipe<T> {
 
+    // For debugging
+    private reportLabel: string;
+
     get hasMemory() { return true; }
 
     static new<T>(initialValue?: T) {
@@ -528,6 +543,10 @@ export class State<T> extends Pipe<T> {
         // This is defined here in order to bind it to "this", so it can be used point-free.
         // For example, { onclick: state.set }, instead of { onclick: e => state.set(e) }
         this.set = val => {
+            if (this.reportLabel) {
+                console.log(`Setting ${this.reportLabel}`, val, new Error('set'));
+            }
+
             this.setFunc(val);
             this.subs.sendPing();
         };
@@ -592,6 +611,10 @@ export class State<T> extends Pipe<T> {
 
     trace() {
         return [this, ...this.subs.trace()];
+    }
+
+    reportSets(label: string) {
+        this.reportLabel = label || 'state';
     }
 }
 
@@ -697,7 +720,7 @@ export class MemoryPipe<T> extends Pipe<T> {
         this.isDirty = false;
         const newValue = this.source.get();
 
-        if (newValue instanceof PipeSignal) {
+        if (newValue instanceof PipeSignal || newValue === undefined) {
             // TODO: Is this what makes the most sense here?
             // When we get a "nevermind" signal, we should probably not change our internal state.
             return this.hasValue ? this.currentValue! : PipeSignal.noValue;
@@ -754,7 +777,7 @@ export class CombinedPipe extends Pipe<Array<any>> {
     public get(): Array<any> | PipeSignal {
         const values = this.pipes.map(p => p.get());
 
-        if (values.some(v => v instanceof PipeSignal)) {
+        if (values.some(v => v instanceof PipeSignal || v === undefined)) {
             // TODO: If we introduce more special signals, we have to think about how they combine here.
             return PipeSignal.noValue;
         }
@@ -1169,7 +1192,7 @@ export class AccumulatingPipe<TIn, TState> extends Pipe<TState> {
     private currentValue: TState;
 
     constructor(
-        private sourcePipe: Pipe<TIn>,
+        private source: Pipe<TIn>,
         private accumulate: (state: TState, value: TIn) => TState,
         seed: TState
     ) {
@@ -1184,7 +1207,7 @@ export class AccumulatingPipe<TIn, TState> extends Pipe<TState> {
         }
 
         this.isDirty = false;
-        const newValue = this.sourcePipe.get();
+        const newValue = this.source.get();
 
         if (newValue instanceof PipeSignal) {
             return this.currentValue;
@@ -1204,7 +1227,7 @@ export class AccumulatingPipe<TIn, TState> extends Pipe<TState> {
             onPing();
         }
 
-        return this.sourcePipe.subscribePing(() => {
+        return this.source.subscribePing(() => {
             this.isDirty = true;
             onPing();
         }, () => [this, ...trace()]);
@@ -1417,6 +1440,7 @@ export class ProducerPipe<T> extends Pipe<T> {
 export class Action<T = null> extends Pipe<T> {
     private subs: SubscriptionHolder;
     private lastValue: T | PipeSignal | undefined;
+    public readonly call: ActionCallSignature<T>;
 
     constructor() {
         super();
@@ -1429,21 +1453,20 @@ export class Action<T = null> extends Pipe<T> {
                 this.lastValue = undefined;
             }
         );
-    }
 
-    call(this: Action<null>): void;
-    call(this: Action<T>, value: T): void;
-    call(this: Action<any>, value?: T | undefined) {
-        if (value === undefined) {
-            // A lastValue of undefined indicates no signal has been sent yet.
-            // We use null for cases where the signal is important, but there's no specific value.
-            this.lastValue = null;
-        }
-        else {
-            this.lastValue = value;
-        }
+        this.call = <any>((value?: T | undefined) => {
 
-        this.subs.sendPing();
+            if (value === undefined) {
+                // A lastValue of undefined indicates no signal has been sent yet.
+                // We use null for cases where the signal is important, but there's no specific value.
+                this.lastValue = null;
+            }
+            else {
+                this.lastValue = value;
+            }
+
+            this.subs.sendPing();
+        });
     }
 
     public get(): T | PipeSignal {
@@ -1461,6 +1484,12 @@ export class Action<T = null> extends Pipe<T> {
         return [this, ...this.subs.trace()];
     }
 }
+
+interface ActionCallSignature<T> {
+    (this: Action<null>): void;
+    (this: Action<T>, value: T): void;
+    (this: Action<any>, value?: T | undefined)
+};
 
 export interface PipeCombineSignature {
     (): Pipe<[]>;
