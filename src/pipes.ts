@@ -652,6 +652,7 @@ export class FilterPipe<T> extends Pipe<T> {
 export class MapPipe<TSource, TEnd> extends Pipe<TEnd> {
     private lastResult: TEnd | PipeSignal;
     private isDirty: boolean;
+    private readonly subs: SubscriptionHolder;
 
     constructor(
         public readonly source: Pipe<TSource>,
@@ -659,6 +660,19 @@ export class MapPipe<TSource, TEnd> extends Pipe<TEnd> {
     ) {
         super();
         this.isDirty = true;
+        this.subs = new SubscriptionHolder();
+
+        // For safety, map automatically remembers its last signal. This is sometimes wasteful, but prevents a class of
+        // difficult-to-debug errors where instances created in the projection are not "shared" in the way the consumer intends.
+        // We use a SubscriptionHolder to prevent isDirty from being set inappropriately.
+        // This doesn't need to be unsubscribed from because the subscribed object has the same lifetime as the subscribing.
+        this.subs.proxySubscribePing(this.source, () => this.onSourcePing(), () => [this]);
+    }
+
+    private onSourcePing() {
+        this.isDirty = true;
+        this.lastResult = PipeSignal.noValue;
+        this.subs.sendPing();
     }
 
     public get(): TEnd | PipeSignal {
@@ -687,14 +701,12 @@ export class MapPipe<TSource, TEnd> extends Pipe<TEnd> {
 
     subscribePing(onPing: () => void, trace: TraceFunction<TEnd>): () => void {
         this.debug("Subscribing");
-        return this.source.subscribePing(
-            () => {
-                this.isDirty = true;
-                this.lastResult = undefined;
-                onPing();
-            },
-            () => [this, ...trace()]
-        );
+
+        if (!(this.lastResult instanceof PipeSignal)) {
+            onPing();
+        }
+
+        return this.subs.subscribePing(onPing, trace);
     }
 }
 
@@ -1190,6 +1202,7 @@ export class AccumulatingPipe<TIn, TState> extends Pipe<TState> {
 
     private isDirty: boolean;
     private currentValue: TState;
+    private readonly subs: SubscriptionHolder;
 
     constructor(
         private source: Pipe<TIn>,
@@ -1199,6 +1212,17 @@ export class AccumulatingPipe<TIn, TState> extends Pipe<TState> {
         super();
         this.currentValue = seed;
         this.isDirty = false;
+        this.subs = new SubscriptionHolder();
+
+        // Use a subscription holder to ensure at most one subscription to the source. Otherwise this.isDirty can be set inappropriately
+        // on new subscriptions if a tributary of this.source calls onPing immediately.
+        // This doesn't need to be unsubscribed from because the subscribed object has the same lifetime as the subscribing.
+        this.subs.proxySubscribePing(this.source, () => this.onSourcePing(), () => [this]);
+    }
+
+    private onSourcePing() {
+        this.isDirty = true;
+        this.subs.sendPing();
     }
 
     public get(): TState | PipeSignal {
@@ -1227,10 +1251,13 @@ export class AccumulatingPipe<TIn, TState> extends Pipe<TState> {
             onPing();
         }
 
-        return this.source.subscribePing(() => {
-            this.isDirty = true;
-            onPing();
-        }, () => [this, ...trace()]);
+        return this.subs.subscribePing(onPing, trace);
+
+
+        //return this.source.subscribePing(() => {
+        //    this.isDirty = true;
+        //    onPing();
+        //}, () => [this, ...trace()]);
     }
 }
 
