@@ -517,7 +517,7 @@ export class SubscriptionHolder {
 export class State<T> extends Pipe<T> {
 
     // For debugging
-    private reportLabel: string;
+    private reportLabel: string | undefined;
 
     get hasMemory() { return true; }
 
@@ -576,8 +576,8 @@ export class State<T> extends Pipe<T> {
 
         const currentVal = this.getFunc();
 
-        //if (currentVal !== undefined) {Z
-        this.set(transform(currentVal));
+        //if (currentVal !== undefined) {
+        this.set(transform(<any>currentVal));
         //}
     }
 
@@ -661,6 +661,7 @@ export class MapPipe<TSource, TEnd> extends Pipe<TEnd> {
         super();
         this.isDirty = true;
         this.subs = new SubscriptionHolder();
+        this.lastResult = PipeSignal.noValue;
 
         // For safety, map automatically remembers its last signal. This is sometimes wasteful, but prevents a class of
         // difficult-to-debug errors where instances created in the projection are not "shared" in the way the consumer intends.
@@ -1486,7 +1487,7 @@ export class Action<T = null> extends Pipe<T> {
             if (value === undefined) {
                 // A lastValue of undefined indicates no signal has been sent yet.
                 // We use null for cases where the signal is important, but there's no specific value.
-                this.lastValue = null;
+                this.lastValue = <any>null;
             }
             else {
                 this.lastValue = value;
@@ -1515,7 +1516,7 @@ export class Action<T = null> extends Pipe<T> {
 interface ActionCallSignature<T> {
     (this: Action<null>): void;
     (this: Action<T>, value: T): void;
-    (this: Action<any>, value?: T | undefined)
+    (this: Action<any>, value?: T | undefined) : void
 };
 
 export interface PipeCombineSignature {
