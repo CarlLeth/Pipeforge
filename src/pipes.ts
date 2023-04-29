@@ -441,7 +441,7 @@ export class SubscriptionHolder {
     }
 
     public any() {
-        for (let key in this.subscribers) {
+        for (let _key in this.subscribers) {
             return true;
         }
 
@@ -562,7 +562,6 @@ export class State<T> extends Pipe<T> {
 
     /**
      * Changes the value of this State object to a new value by applying the given transformation.
-     * If this State object has no current value, nothing happens -- the transform is not executed and the state is not changed.
      */
     update(transform: (currentValue: T) => T) {
         // What do we do when we don't have any value yet? We have a few options:
@@ -762,7 +761,7 @@ export class MemoryPipe<T> extends Pipe<T> {
 
             this.isDirty = true;
             onPing();
-        }, () => [this, ...trace()] );
+        }, () => [this, ...trace()]);
     }
 
     get value() {
