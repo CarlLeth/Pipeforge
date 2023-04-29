@@ -196,6 +196,10 @@ export abstract class Pipe<T> {
         return new FallbackPipe(this, () => fixedFallbackValue);
     }
 
+    fallbackPipe(fallback: Pipe<T>): Pipe<T> {
+        return new FallbackInnerPipe(this, fallback);
+    }
+
     catch(handleError: (error: any) => void): Pipe<T>
     catch(handleError: (error: any) => T): Pipe<T>
     catch<TError>(handleError: (error: any) => TError): Pipe<T | TError> {
@@ -1086,6 +1090,53 @@ export class FallbackPipe<T> extends Pipe<T> {
     subscribePing(onPing: () => void, trace: TraceFunction<T>): () => void {
         this.debug("Subscribing");
         return this.source.subscribePing(onPing, () => [this, ...trace()]);
+    }
+}
+
+export class FallbackInnerPipe<T> extends Pipe<T> {
+
+    private lastPrimaryHadValue: boolean;
+
+    constructor(
+        public readonly source: Pipe<T>,
+        public readonly fallBackTo: Pipe<T>
+    ) {
+        super();
+        this.lastPrimaryHadValue = false;
+    }
+
+    public get(): T | PipeSignal {
+        const value = this.source.get();
+
+        if (value instanceof PipeSignal) {
+            this.lastPrimaryHadValue = false;
+            return this.fallBackTo.get();
+        }
+        else {
+            this.lastPrimaryHadValue = true;
+            return value;
+        }
+    }
+
+    get hasMemory() { return false; }
+
+    subscribePing(onPing: () => void, trace: TraceFunction<T>): () => void {
+        this.debug("Subscribing");
+
+        const unsubPrimary = this.source.subscribePing(onPing, () => [this, ...trace()]);
+
+        const unsubFallback = this.fallBackTo.subscribePing(() => {
+            // Suppress pings if the primary pipe currently has a value.
+            // If the primary updates to no value at the same time as the fallback pings, the ping goes through anyway via the primary subscription.
+            if (!this.lastPrimaryHadValue) {
+                onPing();
+            }
+        }, () => [this, ...trace()]);
+
+        return () => {
+            unsubPrimary();
+            unsubFallback();
+        };
     }
 }
 
