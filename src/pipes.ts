@@ -197,6 +197,10 @@ export abstract class Pipe<T> {
     }
 
     fallbackPipe(fallback: Pipe<T>): Pipe<T> {
+        if (!(fallback instanceof Pipe)) {
+            throw new Error(`Attempted to set a fallbackPipe of ${fallback}`);
+        }
+
         return new FallbackInnerPipe(this, fallback);
     }
 
@@ -218,6 +222,7 @@ export abstract class Pipe<T> {
                 unsubscribe();
                 action(val);
             }
+            // TODO: Unsubscribe on error
         });
     }
 
@@ -387,6 +392,12 @@ export abstract class Pipe<T> {
         return Pipe.producer(send => {
             const handle = window.setInterval(() => send(null), periodMs);
             return () => window.clearInterval(handle);
+        });
+    }
+
+    static error(createError: () => Error) {
+        return Pipe.producer(send => {
+            throw createError();
         });
     }
 
@@ -1425,6 +1436,32 @@ export class PipeInput<T = null> extends Pipe<T> {
         // Any subscribers must also be subscribed to this state, so we can just start tracing there.
         return [this, ...this.state.trace()];
     }
+
+    /**
+     * Changes the current value to a new value by applying the given transformation.
+     */
+    update(transform: (currentValue: T) => T) {
+        // What do we do when we don't have any value yet? We have a few options:
+        // 1. Force the transform to explicitly deal with undefined. But this is an implementation detail: we could
+        //    just as easily have used a boolean to signify whether we had a value. So undefined should not leak out.
+        // 2. Pass undefined unsafely into the transform. This is just option 1 without the consumer knowing about it.
+        //    Not ideal.
+        // 3. Ignore updates when we have no value yet. The problem is calls like "update(_ => 7)", where the consumer
+        //    expects the value to just always get set to 7, regardless of our current state. But we do already have "set" for this.
+        // Trying out Option 2 as a balance between the two.
+
+        const currentVal = this.get();
+
+        //if (currentVal !== undefined) {
+        this.set(transform(<any>currentVal));
+        //}
+    }
+
+    // Alias of "update"
+    modify(transform: (currentValue: T) => T) {
+        this.update(transform);
+    }
+
 
     static new<T>(initialValue?: T) {
         return new PipeInput<T>(initialValue);
