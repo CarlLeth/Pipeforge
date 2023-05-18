@@ -395,9 +395,16 @@ export abstract class Pipe<T> {
         });
     }
 
-    static error(createError: () => Error) {
+    static error(createError: () => (Error | string)): Pipe<any> {
         return Pipe.producer(send => {
-            throw createError();
+            const err = createError();
+
+            if (typeof (err) === 'string') {
+                throw new Error(err);
+            }
+            else {
+                throw err;
+            }
         });
     }
 
