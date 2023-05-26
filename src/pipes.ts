@@ -180,7 +180,9 @@ export abstract class Pipe<T> {
     }
 
     debounce(milliseconds: number): Pipe<T> {
-        return this.debounceGroup(milliseconds).map(values => values[values.length - 1]);
+        return this.debounceGroup(milliseconds)
+            .filter(arr => arr.length > 0)
+            .map(values => values[values.length - 1]);
     }
 
     /*
@@ -1095,7 +1097,7 @@ export class FallbackPipe<T> extends Pipe<T> {
     public get(): T | PipeSignal {
         const value = this.source.get();
 
-        if (value instanceof PipeSignal) {
+        if (value instanceof PipeSignal || value === undefined) {
             return this.getFallbackValue();
         }
         else {
