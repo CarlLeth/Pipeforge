@@ -295,7 +295,7 @@ export abstract class Pipe<T> {
             }, { state: <PipeSignal | T>PipeSignal.noValue, emit: false })
             .filter(o => o.emit)
             .map(o => o.state)
-            .remember();
+            .fallbackPipe(this);
     }
 
     withUpdates<TUpdate>(updates: Pipe<TUpdate>, applyUpdate: (value: T, update: TUpdate) => T): Pipe<T> {
@@ -337,6 +337,15 @@ export abstract class Pipe<T> {
             }, { emit: false, data: <[T | undefined, T2 | undefined]>[undefined, undefined] })
             .filter(o => o.emit && o.data[0] !== undefined && o.data[1] !== undefined)
             .map(o => o.data as [T, T2]);
+    }
+
+    /**
+     * Returns a pipe that copies values from this pipe whenever the given pipe sends any ping.
+     * The returned pipe will only send signals when gatingPipe does, and will contain whatever value
+     * this pipe had the last time the gated pipe sent a signal.
+     */
+    gatedBy(gatingPipe: Pipe<any>): Pipe<T> {
+        return new GatingPipe(this, gatingPipe);
     }
 
     static combine = function combine(...pipes: Array<Pipe<any>>) {
@@ -643,11 +652,17 @@ export class State<T> extends Pipe<T> {
 
 export class FilterPipe<T> extends Pipe<T> {
 
+    private checkIsPending: boolean;
+    private readonly subs: SubscriptionHolder;
+
     constructor(
         public readonly source: Pipe<T>,
         public readonly predicate: (value: T) => boolean
     ) {
         super();
+        this.checkIsPending = false;
+        this.subs = new SubscriptionHolder();
+        this.subs.proxySubscribePing(source, () => this.onSourcePing(), () => [this]);
     }
 
     public get(): T | PipeSignal {
@@ -668,9 +683,32 @@ export class FilterPipe<T> extends Pipe<T> {
 
     subscribePing(onPing: () => void, trace: TraceFunction<T>): () => void {
         this.debug("Subscribing");
-        return this.source.subscribePing(onPing, () => [this, ...trace()]);
+        return this.subs.subscribePing(onPing, trace);
+    }
+
+    private checkNewValue() {
+        this.checkIsPending = false;
+        const sourceValue = this.source.get();
+
+        if (!(sourceValue instanceof PipeSignal) && this.predicate(sourceValue)) {
+            this.subs.sendPing();
+        }
+    }
+
+    private onSourcePing() {
+        if (!this.checkIsPending) {
+            this.checkIsPending = true;
+
+            // Wait one frame before getting the value to check against the predicate.
+            setTimeout(() => this.checkNewValue(), 0);
+        }
+    }
+
+    trace() {
+        return [this, ...this.subs.trace()];
     }
 }
+
 
 export class MapPipe<TSource, TEnd> extends Pipe<TEnd> {
     private lastResult: TEnd | PipeSignal;
@@ -1607,6 +1645,49 @@ export class Action<T = null> extends Pipe<T> {
     trace() {
         return [this, ...this.subs.trace()];
     }
+}
+
+export class GatingPipe<T> extends Pipe<T> {
+
+    private refreshNextValue: boolean;
+    private lastAllowedValue: T | PipeSignal;
+
+    constructor(
+        public readonly values: Pipe<T>,
+        public readonly signals: Pipe<any>
+    ) {
+        super();
+        this.refreshNextValue = false;
+        this.lastAllowedValue = PipeSignal.noValue;
+    }
+
+    subscribePing(onPing: () => void, trace: TraceFunction<T>): () => void {
+        this.debug("Subscribing");
+
+        // Ignore pings from the value stream, but still subscribe to turn everything on.
+        const unsubValues = this.values.subscribePing(() => { }, () => [this]);
+
+        const unsubSignals = this.signals.subscribePing(() => {
+            this.refreshNextValue = true;
+            onPing();
+        }, trace);
+
+        return () => {
+            unsubSignals();
+            unsubValues();
+        }
+    }
+
+    public get(): T | PipeSignal {
+        if (this.refreshNextValue) {
+            this.refreshNextValue = false;
+            this.lastAllowedValue = this.values.get();
+        }
+
+        return this.lastAllowedValue;
+    }
+
+    get hasMemory() { return false; }
 }
 
 interface ActionCallSignature<T> {
