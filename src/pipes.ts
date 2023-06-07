@@ -932,6 +932,10 @@ export class MergedPipe extends Pipe<any> {
 
     get hasMemory() { return false; }
 
+    get pipesInRecencyOrder() {
+        return [...this.recentPipes];
+    }
+
     subscribePing(onPing: () => void, trace: TraceFunction<any>): () => void {
         this.debug("Subscribing");
 
@@ -1371,9 +1375,10 @@ export class AccumulatingPipe<TIn, TState> extends Pipe<TState> {
 }
 
 export class PipeCollection<T> extends Pipe<T> {
-    private pipes: Set<Pipe<T>>;
-    private mergedPipe: Pipe<T>
+    private readonly pipes: Set<Pipe<T>>;
     public readonly subs: SubscriptionHolder;
+
+    private mergedPipe: Pipe<T>
     private unsubscribe: () => void;
 
     constructor() {
@@ -1389,6 +1394,10 @@ export class PipeCollection<T> extends Pipe<T> {
     }
 
     get hasMemory() { return false; }
+
+    get members() {
+        return [...this.pipes.values()];
+    }
 
     subscribePing(onPing: () => void, trace: TraceFunction<T>): () => void {
         this.debug("Subscribing");
@@ -1428,6 +1437,10 @@ export class PipeCollection<T> extends Pipe<T> {
         this.unsubscribe = this.subs.proxySubscribePing(this.mergedPipe, () => this.subs.sendPing(), () => [this]);
 
         cleanup();
+
+        // Let subscribers know something might have changed, but wait in case
+        // synchronous subscriptions are still coming up.
+        setTimeout(() => this.subs.sendPing(), 0);
     }
 }
 
