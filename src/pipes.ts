@@ -449,15 +449,17 @@ export class SubscriptionHolder {
 
     public subscribePing(onPing: () => void, trace: TraceFunction<any>): () => void {
 
-        if (!this.any()) {
-            // If this is the first subscription, switch all proxy subscriptions on.
-            this.forEachProxy(proxy => proxy.on());
-        }
+        const firstSubscription = !this.any();
 
         const subscriberIndex = this.nextIndex;
         this.subscribers[subscriberIndex] = onPing;
         this.tracers[subscriberIndex] = trace;
         this.nextIndex++;
+
+        if (firstSubscription) {
+            // If this is the first subscription, switch all proxy subscriptions on.
+            this.forEachProxy(proxy => proxy.on());
+        }
 
         return () => {
             //if (Pipe.debugMode) {
