@@ -268,16 +268,16 @@ export abstract class Pipe<T> {
     }
 
     /**
-     * Returns a new pipe whose value is the latest value sent by this pipe, modified by any transitions that
-     * were sent by the given pipe since the last new value. New values from this pipe will overwrite any transitions
+     * Returns a new pipe whose value is the latest value sent by this pipe, modified by any updates that
+     * were sent by the given pipe since the last new value. New values from this pipe will overwrite any updates
      * that have occurred.
-     * @param transitions
+     * @param updates
      */
-    withTransitions(transitions: Pipe<(currentState: T) => T>): Pipe<T> {
+    withUpdates(updates: Pipe<(currentState: T) => T>): Pipe<T> {
         return Pipe
             .mergeLabeled({
                 value: this,
-                transition: transitions
+                transition: updates
             })
             .fold((last, event) => {
                 if ('transition' in event) {
@@ -298,9 +298,9 @@ export abstract class Pipe<T> {
             .fallbackPipe(this);
     }
 
-    withUpdates<TUpdate>(updates: Pipe<TUpdate>, applyUpdate: (value: T, update: TUpdate) => T): Pipe<T> {
-        const transitions = updates.map(update => (value: T) => applyUpdate(value, update));
-        return this.withTransitions(transitions);
+    withTransitions<TTransition>(transitions: Pipe<TTransition>, applyTransition: (value: T, transition: TTransition) => T): Pipe<T> {
+        const updates = transitions.map(update => (value: T) => applyTransition(value, update));
+        return this.withUpdates(updates);
     }
 
     compose<TResult>(transform: (thisPipe: Pipe<T>) => TResult) {
@@ -1486,7 +1486,7 @@ export class PipeInput<T = null> extends Pipe<T> {
         this.state.set(newValue);
     }
 
-    send(this: PipeInput<null>) {
+    call(this: PipeInput<null>) {
         this.state.set(null);
     }
 
