@@ -569,9 +569,9 @@ export class State<T> extends Pipe<T> {
     public set: (newValue: T) => void;
 
     constructor(
-        private getFunc: () => T | undefined,
+        private getFunc: () => T | PipeSignal | undefined,
         private setFunc: (newValue: T) => void,
-        private subs: SubscriptionHolder
+        private subs?: SubscriptionHolder
     ) {
         super();
 
@@ -588,6 +588,10 @@ export class State<T> extends Pipe<T> {
 
         // Need this?
         this.set = this.set.bind(this);
+
+        if (this.subs === undefined) {
+            this.subs = new SubscriptionHolder();
+        }
     }
 
     public get(): T | PipeSignal {
@@ -1492,6 +1496,15 @@ export class PipeInput<T = null> extends Pipe<T> {
 
     asPipe(): Pipe<T> {
         return this;
+    }
+
+    asState(): State<T> {
+        return this.state.focus({
+            get: () => this.merged.get(),
+            set: (value) => orig => {
+                return (value instanceof PipeSignal) ? orig : value;
+            }
+        }) as any;
     }
 
     trace() {
