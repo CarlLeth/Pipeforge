@@ -567,13 +567,16 @@ export class State<T> extends Pipe<T> {
     }
 
     public set: (newValue: T) => void;
+    private subs: SubscriptionHolder;
 
     constructor(
         private getFunc: () => T | PipeSignal | undefined,
         private setFunc: (newValue: T) => void,
-        private subs?: SubscriptionHolder
+        subs?: SubscriptionHolder
     ) {
         super();
+
+        this.subs = subs || new SubscriptionHolder();
 
         // This is defined here in order to bind it to "this", so it can be used point-free.
         // For example, { onclick: state.set }, instead of { onclick: e => state.set(e) }
@@ -589,9 +592,6 @@ export class State<T> extends Pipe<T> {
         // Need this?
         this.set = this.set.bind(this);
 
-        if (this.subs === undefined) {
-            this.subs = new SubscriptionHolder();
-        }
     }
 
     public get(): T | PipeSignal {
