@@ -1462,8 +1462,16 @@ export class PipeInput<T = null> extends Pipe<T> {
 
     constructor(initialValue?: T) {
         super();
-        this.state = State.new<T>(initialValue);
+
+        let value = initialValue;
+
         this.collection = new PipeCollection<T>();
+        this.state = new State<T>(
+            () => value,
+            newValue => value = newValue,
+            this.collection.subs
+        );
+
         this.merged = Pipe.merge(this.state, this.collection);
     }
 
