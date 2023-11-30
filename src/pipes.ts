@@ -763,8 +763,15 @@ export class MapPipe<TSource, TEnd> extends Pipe<TEnd> {
             this.lastResult = sourceValue;
         }
         else {
-            this.isDirty = false;
             this.lastResult = this.projection(sourceValue);
+
+            if (this.lastResult === undefined) {
+                this.lastResult = PipeSignal.noValue;
+            }
+
+            if (!(this.lastResult instanceof PipeSignal)) {
+                this.isDirty = false;
+            }
         }
 
         return this.lastResult;
