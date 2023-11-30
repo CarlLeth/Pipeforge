@@ -82,7 +82,7 @@ export abstract class Pipe<T> {
     }
 
     private static emptyPipe: Pipe<any>;
-    static empty<T>() : Pipe<T> {
+    static empty<T>(): Pipe<T> {
         if (!Pipe.emptyPipe) {
             Pipe.emptyPipe = new EmptyPipe<any>();
         }
@@ -192,8 +192,7 @@ export abstract class Pipe<T> {
      * Returns a stream based on this one that is guaranteed to have a value at all times. Whenever this
      * stream has a value, that value is returned; otherwise, the given fallback value is returned.
      */
-    fallback(getFallbackValue: () => T): Pipe<T>
-    {
+    fallback(getFallbackValue: () => T): Pipe<T> {
         return new FallbackPipe(this, getFallbackValue);
     }
 

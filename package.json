@@ -1,7 +1,7 @@
 {
     "license": "MIT",
     "name": "pipeforge",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "description": "Simple, opinionated reactive tools",
     "author": {
         "name": "Carl Leth"

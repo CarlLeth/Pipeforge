@@ -5,6 +5,8 @@
     "module": "ESNext",
     "lib": ["ESNext", "DOM"],
     "moduleResolution": "Node",
+    "declaration": true,
+    "declarationDir": "./dist",
     "strict": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
@@ -16,6 +18,7 @@
     "outDir": "./dist"
   },
   "exclude": [
-    "node_modules"
+    "node_modules",
+    "dist"
   ]
 }
