@@ -1665,6 +1665,11 @@ export class Action<T = null> extends Pipe<T> {
     }
 
     public get(): T | PipeSignal {
+        // Actions are approximating "instantaneous" values that become invalid after their first get.
+        // We want to forget the value after it's been transmitted.
+        // Wait a frame in case multiple different subscribers are getting the value.
+        setTimeout(() => this.lastValue = undefined, 0);
+
         return (this.lastValue === undefined) ? PipeSignal.noValue : this.lastValue;
     }
 
@@ -1726,7 +1731,7 @@ export class GatingPipe<T> extends Pipe<T> {
 interface ActionCallSignature<T> {
     (this: Action<null>): void;
     (this: Action<T>, value: T): void;
-    (this: Action<any>, value?: T | undefined) : void
+    (this: Action<any>, value?: T | undefined): void
 };
 
 export interface PipeCombineSignature {
