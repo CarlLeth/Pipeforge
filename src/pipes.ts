@@ -281,11 +281,17 @@ export abstract class Pipe<T> {
             })
             .fold((last, event) => {
                 if ('transition' in event) {
-                    if (last.state instanceof PipeSignal) {
+                    let current = last.state;
+
+                    if (current instanceof PipeSignal) {
+                        current = this.get();
+                    }
+
+                    if (current instanceof PipeSignal) {
                         return last;
                     }
                     else {
-                        return { state: event.transition!(last.state), emit: true };
+                        return { state: event.transition!(current), emit: true };
                     }
                 }
                 else {
