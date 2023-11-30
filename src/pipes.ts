@@ -126,7 +126,10 @@ export abstract class Pipe<T> {
             }
         }
 
-        return this.subscribePing(onPing, () => [listener]);
+        const unsub = this.subscribePing(onPing, () => [listener]);
+        onPing();
+
+        return unsub;
 
         function onPing() {
             if (valuePending) {
