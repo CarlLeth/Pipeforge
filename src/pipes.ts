@@ -754,8 +754,6 @@ export class MapPipe<TSource, TEnd> extends Pipe<TEnd> {
             return this.lastResult;
         }
 
-        this.isDirty = false;
-
         const sourceValue = this.source.get();
 
         if (sourceValue === undefined) {
@@ -765,6 +763,7 @@ export class MapPipe<TSource, TEnd> extends Pipe<TEnd> {
             this.lastResult = sourceValue;
         }
         else {
+            this.isDirty = false;
             this.lastResult = this.projection(sourceValue);
         }
 
