@@ -666,7 +666,9 @@ export class State<T> extends Pipe<T> {
 
 export class FilterPipe<T> extends Pipe<T> {
 
-    private checkIsPending: boolean;
+    private isDirty: boolean;
+    private cachedResult: T | PipeSignal;
+
     private readonly subs: SubscriptionHolder;
 
     constructor(
@@ -674,23 +676,15 @@ export class FilterPipe<T> extends Pipe<T> {
         public readonly predicate: (value: T) => boolean
     ) {
         super();
-        this.checkIsPending = false;
+        this.cachedResult = PipeSignal.noValue;
+        this.isDirty = true;
         this.subs = new SubscriptionHolder();
         this.subs.proxySubscribePing(source, () => this.onSourcePing(), () => [this]);
     }
 
     public get(): T | PipeSignal {
-        const sourceValue = this.source.get();
-
-        if (sourceValue instanceof PipeSignal) {
-            return sourceValue;
-        }
-        else if (this.predicate(sourceValue)) {
-            return sourceValue;
-        }
-        else {
-            return PipeSignal.noValue;
-        }
+        this.updateCachedResult();
+        return this.cachedResult;
     }
 
     get hasMemory() { return false; }
@@ -700,21 +694,38 @@ export class FilterPipe<T> extends Pipe<T> {
         return this.subs.subscribePing(onPing, trace);
     }
 
-    private checkNewValue() {
-        this.checkIsPending = false;
-        const sourceValue = this.source.get();
+    private updateCachedResult() {
+        if (!this.isDirty) {
+            return;
+        }
 
-        if (!(sourceValue instanceof PipeSignal) && this.predicate(sourceValue)) {
+        this.isDirty = false;
+        const sourceResult = this.source.get();
+
+        // Cache the passing value if predicate succeeds, or PipeSignal.noValue if the predicate fails.
+        // This ensures only one call to both source.get and this.predicate per received ping.
+        if (!(sourceResult instanceof PipeSignal) && this.predicate(sourceResult)) {
+            this.cachedResult = sourceResult;
+        }
+        else {
+            this.cachedResult = PipeSignal.noValue;
+        }
+    }
+
+    private checkAndSend() {
+        this.updateCachedResult();
+
+        if (!(this.cachedResult instanceof PipeSignal)) {
             this.subs.sendPing();
         }
     }
 
     private onSourcePing() {
-        if (!this.checkIsPending) {
-            this.checkIsPending = true;
+        if (!this.isDirty) {
+            this.isDirty = true;
 
-            // Wait one frame before getting the value to check against the predicate.
-            setTimeout(() => this.checkNewValue(), 0);
+            // Defer checking the value; in general, get() calls are expected to not be synchronous with pings.
+            setTimeout(() => this.checkAndSend(), 0);
         }
     }
 
