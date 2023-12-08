@@ -971,14 +971,24 @@ export class MergedPipe extends Pipe<any> {
         this.debug("Subscribing");
 
         const allSubscriptions = this.recentPipes.items.map(p => p.subscribePing(
-            () => {
-                this.recentPipes.setHead(p);
-                onPing();
-            },
+            () => this.pingFrom(p, onPing),
             () => [this, ...trace()]
         ));
 
         return () => allSubscriptions.forEach(unsub => unsub());
+    }
+
+    private pingFrom(pipe: Pipe<any>, onPing: () => void) {
+        this.recentPipes.setHead(pipe);
+
+        setTimeout(() => {
+            const value = pipe.get();
+            if (!(value instanceof PipeSignal)) {
+                // Do not send a ping if the pipe does not have a value. Otherwise,
+                // we can accidentally re-send a previous value from another pipe.
+                onPing();
+            }
+        }, 0);
     }
 }
 
@@ -1685,11 +1695,6 @@ export class Action<T = null> extends Pipe<T> {
     }
 
     public get(): T | PipeSignal {
-        // Actions are approximating "instantaneous" values that become invalid after their first get.
-        // We want to forget the value after it's been transmitted.
-        // Wait a frame in case multiple different subscribers are getting the value.
-        setTimeout(() => this.lastValue = undefined, 0);
-
         return (this.lastValue === undefined) ? PipeSignal.noValue : this.lastValue;
     }
 
