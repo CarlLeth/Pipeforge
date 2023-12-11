@@ -666,6 +666,7 @@ export class State<T> extends Pipe<T> {
 
 export class FilterPipe<T> extends Pipe<T> {
 
+    private checkIsPending: boolean;
     private isDirty: boolean;
     private cachedResult: T | PipeSignal;
 
@@ -678,6 +679,7 @@ export class FilterPipe<T> extends Pipe<T> {
         super();
         this.cachedResult = PipeSignal.noValue;
         this.isDirty = true;
+        this.checkIsPending = false;
         this.subs = new SubscriptionHolder();
         this.subs.proxySubscribePing(source, () => this.onSourcePing(), () => [this]);
     }
@@ -721,9 +723,10 @@ export class FilterPipe<T> extends Pipe<T> {
     }
 
     private onSourcePing() {
-        if (!this.isDirty) {
-            this.isDirty = true;
+        this.isDirty = true;
 
+        if (!this.checkIsPending) {
+            this.checkIsPending = true;
             // Defer checking the value; in general, get() calls are expected to not be synchronous with pings.
             setTimeout(() => this.checkAndSend(), 0);
         }
@@ -822,7 +825,6 @@ export class MemoryPipe<T> extends Pipe<T> {
             return this.currentValue === undefined ? PipeSignal.noValue : this.currentValue;
         }
 
-        this.isDirty = false;
         const newValue = this.source.get();
 
         if (newValue instanceof PipeSignal || newValue === undefined) {
@@ -831,6 +833,7 @@ export class MemoryPipe<T> extends Pipe<T> {
             return this.hasValue ? this.currentValue! : PipeSignal.noValue;
         }
         else {
+            this.isDirty = false;
             this.currentValue = newValue;
             this.hasValue = true;
             return newValue;
@@ -1045,23 +1048,39 @@ export class FlatteningPipe<T> extends Pipe<T> {
         this.lastPipe = null;
 
         // This doesn't need to be unsubscribed from because the subscribed object has the same lifetime as the subscribing.
-        this.subs.proxySubscribePing(this.source, () => this.subs.sendPing(), () => [this]);
+        this.subs.proxySubscribePing(this.source, () => this.onNewPing(), () => [this]);
     }
 
     public get(): T | PipeSignal {
-        const currentPipe = this.source.get();
-
-        if (currentPipe instanceof PipeSignal) {
-            return currentPipe;
+        if (this.lastPipe == null) {
+            this.resubscribe();
         }
 
-        if (currentPipe !== this.lastPipe) {
-            this.unsubscribe();
-            this.lastPipe = currentPipe;
-            this.unsubscribe = currentPipe.subscribePing(() => this.subs.sendPing(), () => [this, ...this.subs.trace()]);
+        if (this.lastPipe == null || this.lastPipe instanceof PipeSignal) {
+            return PipeSignal.noValue;
         }
 
-        return currentPipe.get();
+        return this.lastPipe.get();
+    }
+
+    private onNewPing() {
+        setTimeout(() => this.resubscribe(), 0);
+        this.subs.sendPing();
+    }
+
+    private resubscribe() {
+        const nextPipe = this.source.get();
+
+        if (nextPipe instanceof PipeSignal) {
+            return;
+        }
+        else {
+            // Wait to unsubscribe to prevent thrashing off/on
+            const unsubOld = this.unsubscribe;
+            this.lastPipe = nextPipe;
+            this.unsubscribe = nextPipe.subscribePing(() => this.subs.sendPing(), () => [this, ...this.subs.trace()]);
+            unsubOld();
+        }
     }
 
     get hasMemory() { return false; }
