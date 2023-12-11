@@ -715,6 +715,7 @@ export class FilterPipe<T> extends Pipe<T> {
     }
 
     private checkAndSend() {
+        this.checkIsPending = false;
         this.updateCachedResult();
 
         if (!(this.cachedResult instanceof PipeSignal)) {
@@ -736,7 +737,6 @@ export class FilterPipe<T> extends Pipe<T> {
         return [this, ...this.subs.trace()];
     }
 }
-
 
 export class MapPipe<TSource, TEnd> extends Pipe<TEnd> {
     private lastResult: TEnd | PipeSignal;
