@@ -1034,6 +1034,7 @@ export class FlatteningPipe<T> extends Pipe<T> {
 
     private lastPipe: Pipe<T> | null;
     private unsubscribe: () => void;
+    private awaitingResubscribe: boolean;
 
     public readonly source: Pipe<Pipe<T>>;
     private readonly subs: SubscriptionHolder;
@@ -1046,6 +1047,7 @@ export class FlatteningPipe<T> extends Pipe<T> {
         this.subs = new SubscriptionHolder();
         this.unsubscribe = doNothing;
         this.lastPipe = null;
+        this.awaitingResubscribe = false;
 
         // This doesn't need to be unsubscribed from because the subscribed object has the same lifetime as the subscribing.
         this.subs.proxySubscribePing(this.source, () => this.onNewPing(), () => [this]);
@@ -1064,11 +1066,16 @@ export class FlatteningPipe<T> extends Pipe<T> {
     }
 
     private onNewPing() {
-        setTimeout(() => this.resubscribe(), 0);
-        this.subs.sendPing();
+        if (!this.awaitingResubscribe) {
+            this.awaitingResubscribe = true;
+            setTimeout(() => this.resubscribe(), 0);
+            this.subs.sendPing();
+        }
     }
 
     private resubscribe() {
+        this.awaitingResubscribe = false;
+
         const nextPipe = this.source.get();
 
         if (nextPipe instanceof PipeSignal) {
