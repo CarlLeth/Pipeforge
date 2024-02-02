@@ -1078,7 +1078,7 @@ export class FlatteningPipe<T> extends Pipe<T> {
 
         const nextPipe = this.source.get();
 
-        if (nextPipe instanceof PipeSignal) {
+        if (nextPipe instanceof PipeSignal || this.lastPipe === nextPipe) {
             return;
         }
         else {
