@@ -98,6 +98,8 @@ export abstract class Pipe<T> {
 
     private updateIfNecessary() {
         if (this.isDirty) {
+            this.isDirty = false;
+
             const nextValueTick = this.updateTick();
 
             // A changed tick indicates new values
@@ -109,8 +111,6 @@ export abstract class Pipe<T> {
                     this.valueTick = nextValueTick;
                 }
             }
-
-            this.isDirty = false;
         }
     }
     /**
@@ -168,17 +168,17 @@ export abstract class Pipe<T> {
             else {
                 pipe.onPing();
             }
-        })
+        });
+
+        if (this.subscribers.size > 0) {
+            setTimeout(() => this.broadcastValue(), 0);
+        }
     }
 
     protected onPing() {
         if (!this.isDirty) {
             this.isDirty = true;
             this.pingListeners();
-
-            if (this.subscribers.size > 0) {
-                setTimeout(() => this.broadcastValue(), 0);
-            }
         }
     }
 
@@ -227,6 +227,14 @@ export abstract class Pipe<T> {
             this.values = values;
             this.isDirty = false;
             this.valueTick = Pipe.globalTick;
+            this.pingListeners();
+        }
+    }
+
+    protected initValues(values: Array<T>) {
+        if (values.length > 0) {
+            this.values = values;
+            this.valueTick = 0;
             this.pingListeners();
         }
     }
@@ -612,7 +620,7 @@ export class CombinedPipe extends Pipe<Array<any>> {
     protected updateValues(): Array<Array<any>> {
         const latestValues = this.pipes.map(pipe => pipe.get());
 
-        if (latestValues.some(val => val == undefined)) {
+        if (latestValues.some(val => val === undefined)) {
             return [];
         }
         else {
@@ -990,7 +998,7 @@ export class AccumulatingPipe<TIn, TState> extends Pipe<TState> {
         super();
         this.listenTo(source);
         this.lastValue = seed;
-        this.postValues([seed]);
+        this.initValues([seed]);
     }
 
     protected updateTick(): number | null {
