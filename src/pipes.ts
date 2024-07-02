@@ -88,6 +88,8 @@ export abstract class Pipe<T> {
     // Indicates whether the Pipe needs to check for new values
     protected isDirty: boolean = true;
 
+    private isUpdating: boolean = false;
+
     private values: Array<T> = [];
     private valueTick = -1;
     private lastBroadcastTick = -1;
@@ -97,9 +99,12 @@ export abstract class Pipe<T> {
     private subscribers = new Set<(value: T) => void>();
 
     private updateIfNecessary() {
-        if (this.isDirty) {
-            this.isDirty = false;
+        if (this.isUpdating) {
+            throw new Error("Cycle detected", { cause: this });
+        }
 
+        if (this.isDirty) {
+            this.isUpdating = true;
             const nextValueTick = this.updateTick();
 
             // A changed tick indicates new values
@@ -111,6 +116,9 @@ export abstract class Pipe<T> {
                     this.valueTick = nextValueTick;
                 }
             }
+
+            this.isUpdating = false;
+            this.isDirty = false;
         }
     }
     /**
@@ -1189,6 +1197,7 @@ export class ConditionAssertingPipe<T> extends Pipe<T> {
 export class PipeInput<T = null> extends Pipe<T> {
 
     private readonly pipes = new Set<Pipe<T>>();
+    private readonly delayedPipes = new Map<Pipe<T>, Pipe<T>>();
     private readonly lastTicks = new Map<Pipe<T>, number>();
     private readonly state: State<T>;
 
@@ -1202,16 +1211,26 @@ export class PipeInput<T = null> extends Pipe<T> {
     add(...pipesToAdd: Array<Pipe<T>>) {
         for (let pipe of pipesToAdd) {
             this.pipes.add(pipe);
-            this.lastTicks.set(pipe, -1);
-            this.listenTo(pipe);
+
+            // PipeInput.add has the possibility of creating cycles.
+            // Most real-world cycles can be resolved by introducing a 0-ms delay on the added pipe.
+            const delayed = pipe.delay(0);
+            this.lastTicks.set(delayed, -1);
+            this.listenTo(delayed);
+
+            this.delayedPipes.set(pipe, delayed);
         }
     }
 
     remove(...pipesToRemove: Array<Pipe<T>>) {
         for (let pipe of pipesToRemove) {
             this.pipes.delete(pipe);
-            this.lastTicks.delete(pipe);
-            this.unlisten(pipe);
+
+            const delayed = this.delayedPipes.get(pipe);
+            this.lastTicks.delete(delayed);
+            this.unlisten(delayed);
+
+            this.delayedPipes.delete(pipe);
         }
     }
 
@@ -1232,11 +1251,11 @@ export class PipeInput<T = null> extends Pipe<T> {
     }
 
     protected updateTick(): number | null {
-        return [...this.pipes.values(), this.state].reduce((max, pipe) => Math.max(max, pipe.getTick()), -1);
+        return [...this.delayedPipes.values(), this.state].reduce((max, pipe) => Math.max(max, pipe.getTick()), -1);
     }
 
     protected updateValues(): Array<T> {
-        const changedPipes = [...this.pipes.values(), this.state].filter(pipe => pipe.getTick() > this.lastTicks.get(pipe));
+        const changedPipes = [...this.delayedPipes.values(), this.state].filter(pipe => pipe.getTick() > this.lastTicks.get(pipe));
         changedPipes.forEach(pipe => this.lastTicks.set(pipe, pipe.getTick()));
         return changedPipes.flatMap(o => o.getAll());
     }
