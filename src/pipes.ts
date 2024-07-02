@@ -1,5 +1,3 @@
-import { RecencyList } from "./RecencyList";
-
 function doNothing() { }
 
 type PipeInnerType<T extends Pipe<any>> = Parameters<Parameters<T['map']>[0]>[0];
@@ -15,50 +13,242 @@ type MergedLabeled<TTemplate extends LabeledPipes> = {
 
 type ShutdownFunction = () => void;
 
-type TraceFunction<T> = () => Array<any>;
-
-interface Lens<TContext, TFocus> {
-    get(context: TContext): TFocus;
-    set(value: TFocus): (context: TContext) => TContext;
-}
-
-export class PipeSignal {
-    static readonly noValue = new PipeSignal();
-
-    // TODO: Any other special signals? Examples:
-    // closing: no more values to expect
-    // error (any examlpes? This would be a pipe-hookup error, not an error value inside of the pipe, right?)
-    // expire: clear the pipes (invalidate any remembered values)
-    // pending: a new value is pending
-    // noData: a signal, but one with no associated data?
-}
-
-export interface PipeListener<T> {
-    onValue: (value: T) => void;
-    //onError: (err: Error) => void;
-};
-
-export type SendSignal<T> = (valueOrSignal: T | PipeSignal) => void;
-
 function isPromise(value: any): value is PromiseLike<any> {
     return (typeof value?.then === 'function');
 }
 
 export abstract class Pipe<T> {
 
-    static debugMode = false;
+    // -- Static recordkeeping --
 
-    private readonly constructedAt;
+    private static livePipes = new Set<Pipe<any>>();
 
-    constructor() {
-        if (Pipe.debugMode) {
-            this.constructedAt = new Error("constructed");
+    protected static globalTick = 0;
+    private static globalTickUpdated = false;
+
+    protected static updateGlobalTick() {
+        if (!Pipe.globalTickUpdated) {
+            Pipe.globalTick++;
+            Pipe.globalTickUpdated = true;
+            setTimeout(() => Pipe.globalTickUpdated = false);
         }
     }
 
-    getConstructionStack() {
-        return this.constructedAt;
+    // -- Primary public methods --
+
+    get(): T | undefined {
+        this.updateIfNecessary();
+
+        if (this.values.length === 0) {
+            return undefined;
+        }
+
+        return this.values[this.values.length - 1];
     }
+
+    getAll(): Array<T> {
+        this.updateIfNecessary();
+        return this.values;
+    }
+
+    getTick() {
+        this.updateIfNecessary();
+        return this.valueTick;
+    }
+
+    subscribe(onValue: (value: T) => void) {
+        this.subscribers.add(onValue);
+
+        // Force this pipe to stay alive
+        Pipe.livePipes.add(this);
+
+        const unsubscribe = () => {
+            this.subscribers.delete(onValue);
+            if (this.subscribers.size === 0) {
+                // Allow this pipe to be garbage collected
+                Pipe.livePipes.delete(this);
+            }
+        };
+
+        // Queue up a call to onValue if we have (or might soon have) a value.
+        if (this.values.length > 0 || this.isDirty) {
+            setTimeout(() => {
+                const nextValue = this.get();
+                if (nextValue !== undefined) {
+                    onValue(nextValue);
+                }
+            })
+        }
+
+        return unsubscribe;
+    }
+
+    // -- Private/protected inner workings --
+
+    // Indicates whether the Pipe needs to check for new values
+    protected isDirty: boolean = true;
+
+    private values: Array<T> = [];
+    private valueTick = -1;
+    private lastBroadcastTick = -1;
+
+    private weakListeners = new Set<WeakRef<Pipe<any>>>();
+
+    private subscribers = new Set<(value: T) => void>();
+
+    private updateIfNecessary() {
+        if (this.isDirty) {
+            const nextValueTick = this.updateTick();
+
+            // A changed tick indicates new values
+            if (nextValueTick != null && nextValueTick !== this.valueTick) {
+                const nextValues = this.updateValues();
+
+                if (nextValues !== null) {
+                    this.values = nextValues;
+                    this.valueTick = nextValueTick;
+                }
+            }
+
+            this.isDirty = false;
+        }
+    }
+    /**
+     * Recalculates and returns the latest tick value for this pipe, or null if the tick value should not change.
+     */
+    protected abstract updateTick(): number | null;
+
+    /**
+     * Recalculates and returns the latest values for this pipe, or null if the values should not change.
+     * If this is called, it is guaranteed that updateTick was previously called for the same cycle.
+     */
+    protected abstract updateValues(): Array<T> | null;
+
+    private isOn = false;
+
+    private firstListenerAdded = () => { }
+    protected onFirstListenerAdded(handle: () => void) {
+        const inner = this.firstListenerAdded;
+        this.firstListenerAdded = () => {
+            inner();
+            handle();
+        };
+    }
+
+    private checkForFirstListener() {
+        if (!this.isOn && (this.weakListeners.size + this.subscribers.size) >= 0) {
+            this.isOn = true;
+            this.firstListenerAdded();
+        }
+    }
+
+    private lastListenerRemoved = () => { }
+    protected onLastListenerRemoved(handle: () => void) {
+        const inner = this.lastListenerRemoved;
+        this.lastListenerRemoved = () => {
+            inner();
+            handle();
+        };
+    }
+
+    private checkForLastListener() {
+        if (this.isOn && (this.weakListeners.size + this.subscribers.size) === 0) {
+            this.isOn = false;
+            this.lastListenerRemoved();
+        }
+    }
+
+    protected pingListeners() {
+        this.weakListeners.forEach(ref => {
+            const pipe = ref.deref();
+            if (pipe == undefined) {
+                this.weakListeners.delete(ref);
+                this.checkForLastListener();
+            }
+            else {
+                pipe.onPing();
+            }
+        })
+    }
+
+    protected onPing() {
+        if (!this.isDirty) {
+            this.isDirty = true;
+            this.pingListeners();
+
+            if (this.subscribers.size > 0) {
+                setTimeout(() => this.broadcastValue(), 0);
+            }
+        }
+    }
+
+    protected broadcastValue() {
+        if (this.getTick() <= this.lastBroadcastTick) {
+            return;
+        }
+
+        this.lastBroadcastTick = this.getTick();
+
+        const nextValue = this.get();
+        if (nextValue !== undefined) {
+            this.subscribers.forEach(send => send(nextValue));
+        }
+    }
+
+    protected listenTo(...sourcePipes: Array<Pipe<any>>) {
+        const ref = new WeakRef(this);
+        sourcePipes.forEach(source => {
+            source.weakListeners.add(ref);
+            source.checkForFirstListener();
+
+            if (source.isDirty) {
+                // If we're just starting to listen to a pipe that has already indicated it may have a new value, then we also may have a new value.
+                // TODO: Is this necessary?
+                this.onPing();
+            }
+        });
+    }
+
+    protected unlisten(pipeToStopListening: Pipe<any>) {
+        for (const ref of pipeToStopListening.weakListeners) {
+            const pipe = ref.deref();
+
+            if (pipe === this) {
+                pipeToStopListening.weakListeners.delete(ref);
+                pipeToStopListening.checkForLastListener();
+                return;
+            }
+        }
+    }
+
+    protected postValues(values: Array<T>) {
+        if (values.length > 0) {
+            Pipe.updateGlobalTick();
+            this.values = values;
+            this.isDirty = false;
+            this.valueTick = Pipe.globalTick;
+            this.pingListeners();
+        }
+    }
+
+    protected postSingleValue(value: T) {
+        Pipe.updateGlobalTick();
+
+        if (this.valueTick === Pipe.globalTick) {
+            // Accumulate values that are posted in the same cycle.
+            this.values = [...this.values, value];
+        }
+        else {
+            // This is the first value posted this cycle.
+            this.values = [value];
+        }
+
+        this.isDirty = false;
+        this.valueTick = Pipe.globalTick;
+        this.pingListeners();
+    }
+
+    // -- Factories and transformations --
 
     static asPipe<T>(value: Pipe<T> | PromiseLike<T> | T | undefined): Pipe<T> {
         if (value === undefined) {
@@ -81,6 +271,8 @@ export abstract class Pipe<T> {
         return new FixedPipe(fixedValue);
     }
 
+    // TODO: Is the allocation savings of have one pipe worth the possibility of thousands of subscribers to the same pipe?
+    // This may degrade the performance of "unlisten"
     private static emptyPipe: Pipe<any>;
     static empty<T>(): Pipe<T> {
         if (!Pipe.emptyPipe) {
@@ -98,65 +290,12 @@ export abstract class Pipe<T> {
         return value instanceof Pipe;
     }
 
-    // Gets the value in the pipe, or returns NoValue if no value is available.
-    public abstract get(): T | PipeSignal;
-
-    // Indicates whether the stream caches new values on the first get().
-    // Streams with memory behave the same if remember() is called on them.
-    public abstract hasMemory: boolean;
-
-    // Subscribes a listener which is synchronously called when this pipe emits a ping.
-    // A ping signals that the pipe may have an updated value.
-    // Many pings may occur from one atomic change, so checking for the new value should be delayed.
-    // This is mostly intended for 
-    abstract subscribePing(onPing: () => void, trace: TraceFunction<T>): () => void;
-
-    subscribe(listener: PipeListener<T> | ((value: T) => void)) {
-
-        const sendValue = ("onValue" in listener) ? listener.onValue : listener;
-
-        let valuePending = false;
-
-        const postNewValue = () => {
-            valuePending = false;
-            const newValue = this.get();
-
-            if (!(newValue instanceof PipeSignal)) {
-                sendValue(newValue);
-            }
-        }
-
-        const unsub = this.subscribePing(onPing, () => [listener]);
-        onPing();
-
-        return unsub;
-
-        function onPing() {
-            if (valuePending) {
-                return;
-            }
-
-            valuePending = true;
-            setTimeout(postNewValue, 0);
-        }
-    }
-
     filter(predicate: (value: T) => boolean): Pipe<T> {
         return new FilterPipe<T>(this, predicate);
     }
 
-    map<TEnd>(projection: (value: T) => (TEnd | PipeSignal)): Pipe<TEnd> {
+    map<TEnd>(projection: (value: T) => (TEnd | undefined)): Pipe<TEnd> {
         return new MapPipe<T, TEnd>(this, projection);
-    }
-
-    remember(): Pipe<T> {
-        //if (this instanceof MemoryPipe || this instanceof State || this instanceof FixedPipe || this instanceof EmptyPipe) {
-        if (this.hasMemory) {
-            return this;
-        }
-        else {
-            return new MemoryPipe<T>(this);
-        }
     }
 
     fold<TState>(accumulator: (state: TState, value: T) => TState, seed: TState): Pipe<TState> {
@@ -178,14 +317,8 @@ export abstract class Pipe<T> {
         return new DelayingPipe(this, milliseconds);
     }
 
-    debounceGroup(milliseconds: number): Pipe<Array<T>> {
-        return new DebouncingPipe(this, milliseconds);
-    }
-
     debounce(milliseconds: number): Pipe<T> {
-        return this.debounceGroup(milliseconds)
-            .filter(arr => arr.length > 0)
-            .map(values => values[values.length - 1]);
+        return new DebouncingPipe(this, milliseconds);
     }
 
     /*
@@ -221,12 +354,10 @@ export abstract class Pipe<T> {
     doOnce(action: (value: T) => void) {
         let unsubscribe = doNothing;
 
-        unsubscribe = this.subscribe({
-            onValue: val => {
-                unsubscribe();
-                action(val);
-            }
-            // TODO: Unsubscribe on error
+        // TODO: Unsubscribe on error
+        unsubscribe = this.subscribe(val => {
+            unsubscribe();
+            action(val);
         });
     }
 
@@ -269,6 +400,7 @@ export abstract class Pipe<T> {
         return new ConditionAssertingPipe(this, assertion, failureMessage);
     }
 
+
     /**
      * Returns a new pipe whose value is the latest value sent by this pipe, modified by any updates that
      * were sent by the given pipe since the last new value. New values from this pipe will overwrite any updates
@@ -285,11 +417,11 @@ export abstract class Pipe<T> {
                 if ('transition' in event) {
                     let current = last.state;
 
-                    if (current instanceof PipeSignal) {
+                    if (current === undefined) {
                         current = this.get();
                     }
 
-                    if (current instanceof PipeSignal) {
+                    if (current === undefined) {
                         return last;
                     }
                     else {
@@ -300,10 +432,11 @@ export abstract class Pipe<T> {
                     return { state: event.value!, emit: true }
                 }
 
-            }, { state: <PipeSignal | T>PipeSignal.noValue, emit: false })
+            }, { state: <T | undefined>undefined, emit: false })
             .filter(o => o.emit)
             .map(o => o.state)
             .fallbackPipe(this);
+        // TODO: This probably deserves a dedicated Pipe implementation.
     }
 
     withTransitions<TTransition>(transitions: Pipe<TTransition>, applyTransition: (value: T, transition: TTransition) => T): Pipe<T> {
@@ -315,18 +448,8 @@ export abstract class Pipe<T> {
         return transform(this);
     }
 
-    //fork(): State<T> {
-
-    //    const updates = State.new<T>();
-
-
-    //    const thing = this.withUpdates(updates, (origVal, newVal) => newVal);
-    //    //Object.setPrototypeOf(thing, updates);
-
-    //    return <State<T>>thing;
-    //}
-
     sampleCombine<T2>(addonPipe: Pipe<T2>): Pipe<[T, T2]> {
+        // TODO: This probably deserves a dedicated Pipe implementation.
         return Pipe
             .mergeLabeled({ sample: this, addon: addonPipe })
             .fold((state, next) => {
@@ -364,7 +487,7 @@ export abstract class Pipe<T> {
         return new CombinedPipeLabeled(templateObj);
     }
 
-    static merge = function combine(...pipes: Array<Pipe<any>>) {
+    static merge = function merge(...pipes: Array<Pipe<any>>) {
         return new MergedPipe(pipes) as unknown;
     } as PipeMergeSignature
 
@@ -388,14 +511,7 @@ export abstract class Pipe<T> {
             .map(f => f());
     }
 
-    /**
-     * Creates a new collection of pipes that can have pipes added to or removed from it.
-     **/
-    static collection<T>() {
-        return new PipeCollection<T>();
-    }
-
-    static producer<T>(activate: (send: SendSignal<T>) => ShutdownFunction): Pipe<T> {
+    static producer<T>(activate: (send: (value: T) => void) => ShutdownFunction): Pipe<T> {
         return new ProducerPipe(activate);
     }
 
@@ -427,907 +543,386 @@ export abstract class Pipe<T> {
         });
     }
 
-    protected debug(message: string) {
-        //if (Pipe.debugMode) {
-        //    console.log(message, this);
-        //}
-    }
-}
-
-interface OnOff {
-    on: () => void;
-    off: () => void;
-}
-
-export class SubscriptionHolder {
-    private nextIndex: number;
-    private subscribers: { [subscriberIndex: number]: () => void };
-    private tracers: { [subscriberIndex: number]: TraceFunction<any> };
-
-    private proxyCount: number;
-    private proxies: { [proxyIndex: number]: OnOff };
-
-    constructor() {
-        this.nextIndex = 0;
-        this.subscribers = {};
-        this.tracers = {};
-        this.proxyCount = 0;
-        this.proxies = [];
-    }
-
-    public subscribePing(onPing: () => void, trace: TraceFunction<any>): () => void {
-
-        const firstSubscription = !this.any();
-
-        const subscriberIndex = this.nextIndex;
-        this.subscribers[subscriberIndex] = onPing;
-        this.tracers[subscriberIndex] = trace;
-        this.nextIndex++;
-
-        if (firstSubscription) {
-            // If this is the first subscription, switch all proxy subscriptions on.
-            this.forEachProxy(proxy => proxy.on());
-        }
-
-        return () => {
-            //if (Pipe.debugMode) {
-            //    console.log("Unsubscribing: ", this.trace());
-            //}
-
-            delete this.subscribers[subscriberIndex];
-            delete this.tracers[subscriberIndex];
-            if (!this.any()) {
-                // If this is the last un-subscription, switch all proxy subscriptions off.
-                this.forEachProxy(proxy => proxy.off());
-            }
-        }
-    }
-
-    public any() {
-        for (let _key in this.subscribers) {
-            return true;
-        }
-
-        return false;
-    }
-
-    public sendPing() {
-        for (let key in this.subscribers) {
-            this.subscribers[key]();
-        }
-    }
-
-    public trace(): Array<any> {
-        const results = Object.values(this.tracers).map(trace => trace());
-
-        if (results.length > 1) {
-            // This is a branch needing its own sub-array.
-            return [results];
-        }
-        else {
-            return results;
-        }
-    }
-
-    private forEachProxy(action: (proxy: OnOff) => void) {
-        for (let key in this.proxies) {
-            action(this.proxies[key]);
-        }
-    }
-
-    // Keeps a single ping subscription open on the given pipe while any subscriptions are open
-    // on this subscription holder. This allows a pipe to run interception routines at most once
-    // on upstream pipes, regardless of how many pipes are downstream of them.
-    // Call the returned function to disable and remove the proxy.
-    public proxySubscribePing(pipe: Pipe<any>, onPing: () => void, selfTrace: () => Array<any>): () => void {
-
-        let unsubscribe: () => void;
-        return this.proxyLink(
-            () => unsubscribe = pipe.subscribePing(onPing, () => [...selfTrace(), ...this.trace()]),
-            () => unsubscribe()
-        );
-    }
-
-    // Calls the "on" function when the first subscriber subscribes to this holder.
-    // Calls the "off" function after the last subscriber has closed thier subscription.
-    // On and off may be called more than once, but will always be called in the order [on, off, on, off, ...]
-    // Call the returned function to disable and remove the proxy.
-    public proxyLink(on: () => void, off: () => void): () => void {
-
-        const proxySubscriptionSwitch = {
-            on: on,
-            off: off
-        };
-
-        const proxyIndex = this.proxyCount;
-        this.proxies[proxyIndex] = proxySubscriptionSwitch;
-
-        this.proxyCount++;
-
-        if (this.any()) {
-            proxySubscriptionSwitch.on();
-        }
-
-        return () => {
-            if (this.any()) {
-                proxySubscriptionSwitch.off();
-            }
-            delete this.proxies[proxyIndex];
-        }
-    }
-}
-
-export class State<T> extends Pipe<T> {
-
-    // For debugging
-    private reportLabel: string | undefined;
-
-    get hasMemory() { return true; }
-
-    static new<T>(initialValue?: T) {
-        let value = initialValue;
-
-        return new State<T>(
-            () => value,
-            newValue => value = newValue,
-            new SubscriptionHolder()
-        );
-    }
-
-    public set: (newValue: T) => void;
-    private subs: SubscriptionHolder;
-
-    constructor(
-        private getFunc: () => T | PipeSignal | undefined,
-        private setFunc: (newValue: T) => void,
-        subs?: SubscriptionHolder
-    ) {
-        super();
-
-        this.subs = subs || new SubscriptionHolder();
-
-        // This is defined here in order to bind it to "this", so it can be used point-free.
-        // For example, { onclick: state.set }, instead of { onclick: e => state.set(e) }
-        this.set = val => {
-            if (this.reportLabel) {
-                console.log(`Setting ${this.reportLabel}`, val, new Error('set'));
-            }
-
-            this.setFunc(val);
-            this.subs.sendPing();
-        };
-
-        // Need this?
-        this.set = this.set.bind(this);
-
-    }
-
-    public get(): T | PipeSignal {
-        const value = this.getFunc();
-        return value === undefined ? PipeSignal.noValue : value;
-    }
-
-    /**
-     * Changes the value of this State object to a new value by applying the given transformation.
-     */
-    update(transform: (currentValue: T) => T) {
-        // What do we do when we don't have any value yet? We have a few options:
-        // 1. Force the transform to explicitly deal with undefined. But this is an implementation detail: we could
-        //    just as easily have used a boolean to signify whether we had a value. So undefined should not leak out.
-        // 2. Pass undefined unsafely into the transform. This is just option 1 without the consumer knowing about it.
-        //    Not ideal.
-        // 3. Ignore updates when we have no value yet. The problem is calls like "update(_ => 7)", where the consumer
-        //    expects the value to just always get set to 7, regardless of our current state. But we do already have "set" for this.
-        // Trying out Option 2 as a balance between the two.
-
-        const currentVal = this.getFunc();
-
-        //if (currentVal !== undefined) {
-        this.set(transform(<any>currentVal));
-        //}
-    }
-
-    // Alias of "update"
-    modify(transform: (currentValue: T) => T) {
-        this.update(transform);
-    }
-
-    subscribePing(onPing: () => void, trace: TraceFunction<T>): () => void {
-        this.debug("Subscribing");
-
-        if (this.getFunc() !== undefined) {
-            // If we have a value, immediately let new subscribers know it's available.
-            onPing();
-        }
-
-        return this.subs.subscribePing(onPing, trace);
-    }
-
     asPipe(): Pipe<T> {
         return this;
     }
-
-    focus<TFocus>(lens: Lens<T, TFocus>): State<TFocus> {
-        return new State(
-            () => lens.get(this.get() as T),
-            focusVal => this.update(lens.set(focusVal)),
-            this.subs
-        );
-    }
-
-    trace() {
-        return [this, ...this.subs.trace()];
-    }
-
-    reportSets(label: string) {
-        this.reportLabel = label || 'state';
-    }
 }
 
+// For debugging
+window['Pipe'] = Pipe;
+
 export class FilterPipe<T> extends Pipe<T> {
-
-    private checkIsPending: boolean;
-    private isDirty: boolean;
-    private cachedResult: T | PipeSignal;
-
-    private readonly subs: SubscriptionHolder;
 
     constructor(
         public readonly source: Pipe<T>,
         public readonly predicate: (value: T) => boolean
     ) {
         super();
-        this.cachedResult = PipeSignal.noValue;
-        this.isDirty = true;
-        this.checkIsPending = false;
-        this.subs = new SubscriptionHolder();
-        this.subs.proxySubscribePing(source, () => this.onSourcePing(), () => [this]);
+        this.listenTo(source);
     }
 
-    public get(): T | PipeSignal {
-        this.updateCachedResult();
-        return this.cachedResult;
-    }
-
-    get hasMemory() { return false; }
-
-    subscribePing(onPing: () => void, trace: TraceFunction<T>): () => void {
-        this.debug("Subscribing");
-        return this.subs.subscribePing(onPing, trace);
-    }
-
-    private updateCachedResult() {
-        if (!this.isDirty) {
-            return;
-        }
-
-        this.isDirty = false;
-        const sourceResult = this.source.get();
-
-        // Cache the passing value if predicate succeeds, or PipeSignal.noValue if the predicate fails.
-        // This ensures only one call to both source.get and this.predicate per received ping.
-        if (!(sourceResult instanceof PipeSignal) && this.predicate(sourceResult)) {
-            this.cachedResult = sourceResult;
+    protected updateTick(): number | null {
+        const filteredValues = this.source.getAll().filter(val => this.predicate(val));
+        if (filteredValues.length > 0) {
+            return this.source.getTick();
         }
         else {
-            this.cachedResult = PipeSignal.noValue;
+            return null;
         }
     }
 
-    private checkAndSend() {
-        this.checkIsPending = false;
-        this.updateCachedResult();
-
-        if (!(this.cachedResult instanceof PipeSignal)) {
-            this.subs.sendPing();
-        }
-    }
-
-    private onSourcePing() {
-        this.isDirty = true;
-
-        if (!this.checkIsPending) {
-            this.checkIsPending = true;
-            // Defer checking the value; in general, get() calls are expected to not be synchronous with pings.
-            setTimeout(() => this.checkAndSend(), 0);
-        }
-    }
-
-    trace() {
-        return [this, ...this.subs.trace()];
+    protected updateValues(): Array<T> {
+        return this.source.getAll().filter(val => this.predicate(val));
     }
 }
 
 export class MapPipe<TSource, TEnd> extends Pipe<TEnd> {
-    private lastResult: TEnd | PipeSignal;
-    private isDirty: boolean;
-    private readonly subs: SubscriptionHolder;
 
     constructor(
         public readonly source: Pipe<TSource>,
-        public readonly projection: (value: TSource) => (TEnd | PipeSignal)
+        public readonly projection: (value: TSource) => TEnd | undefined
     ) {
         super();
-        this.isDirty = true;
-        this.subs = new SubscriptionHolder();
-        this.lastResult = PipeSignal.noValue;
-
-        // For safety, map automatically remembers its last signal. This is sometimes wasteful, but prevents a class of
-        // difficult-to-debug errors where instances created in the projection are not "shared" in the way the consumer intends.
-        // We use a SubscriptionHolder to prevent isDirty from being set inappropriately.
-        // This doesn't need to be unsubscribed from because the subscribed object has the same lifetime as the subscribing.
-        this.subs.proxySubscribePing(this.source, () => this.onSourcePing(), () => [this]);
+        this.listenTo(source);
     }
 
-    private onSourcePing() {
-        this.isDirty = true;
-        this.lastResult = PipeSignal.noValue;
-        this.subs.sendPing();
+    protected updateTick(): number | null {
+        return this.source.getTick();
     }
 
-    public get(): TEnd | PipeSignal {
-        if (!this.isDirty) {
-            return this.lastResult;
-        }
-
-        const sourceValue = this.source.get();
-
-        if (sourceValue === undefined) {
-            this.lastResult = PipeSignal.noValue;
-        }
-        else if (sourceValue instanceof PipeSignal) {
-            this.lastResult = sourceValue;
-        }
-        else {
-            this.lastResult = this.projection(sourceValue);
-
-            if (this.lastResult === undefined) {
-                this.lastResult = PipeSignal.noValue;
-            }
-
-            if (!(this.lastResult instanceof PipeSignal)) {
-                this.isDirty = false;
-            }
-        }
-
-        return this.lastResult;
-    }
-
-    get hasMemory() { return false; }
-
-    subscribePing(onPing: () => void, trace: TraceFunction<TEnd>): () => void {
-        this.debug("Subscribing");
-
-        if (!(this.lastResult instanceof PipeSignal)) {
-            onPing();
-        }
-
-        return this.subs.subscribePing(onPing, trace);
-    }
-}
-
-export class MemoryPipe<T> extends Pipe<T> {
-
-    private hasValue: boolean;
-    private isDirty: boolean;
-    private currentValue: T | undefined;
-
-    constructor(
-        private source: Pipe<T>
-    ) {
-        super();
-        this.isDirty = true;
-        this.hasValue = false;
-    }
-
-    public get(): T | PipeSignal {
-        if (!this.isDirty) {
-            return this.currentValue === undefined ? PipeSignal.noValue : this.currentValue;
-        }
-
-        const newValue = this.source.get();
-
-        if (newValue instanceof PipeSignal || newValue === undefined) {
-            // TODO: Is this what makes the most sense here?
-            // When we get a "nevermind" signal, we should probably not change our internal state.
-            return this.hasValue ? this.currentValue! : PipeSignal.noValue;
-        }
-        else {
-            this.isDirty = false;
-            this.currentValue = newValue;
-            this.hasValue = true;
-            return newValue;
-        }
-    }
-
-    get hasMemory() { return true; }
-
-    subscribePing(onPing: () => void, trace: TraceFunction<T>): () => void {
-        this.debug("Subscribing");
-
-        if (this.hasValue) {
-            // Let the subscriber know a value is immediately available.
-            onPing();
-        }
-
-        return this.source.subscribePing(() => {
-            // It's tempting to clear this.currentValue here for memory efficiency, but a ping only
-            // tells us there *might* be a new value for us. It could be a "never mind" signal.
-            // So we don't know for sure we can forget currentValue yet.
-
-            this.isDirty = true;
-            onPing();
-        }, () => [this, ...trace()]);
-    }
-
-    get value() {
-        return this.currentValue;
+    protected updateValues(): Array<TEnd> {
+        return <Array<TEnd>>this.source.getAll().map(val => this.projection(val)).filter(val => val !== undefined);
     }
 }
 
 export class CombinedPipe extends Pipe<Array<any>> {
 
-    public readonly pipes: Array<Pipe<any>>;
-
     constructor(
-        componentPipes: Array<Pipe<any>>
+        public readonly pipes: Array<Pipe<any>>
     ) {
         super();
-
-        // Component pipes must have memory, because every pipe's value is needed any time
-        // any pipe pings, and their values may become inaccesible (e.g. via a filter)
-        this.pipes = componentPipes.map(o => o.remember());
-
-        //this.lastValues = new Array<any>(pipes.length);
-        //this.hasValue = pipes.map(o => false);
+        this.listenTo(...pipes);
     }
 
-    public get(): Array<any> | PipeSignal {
-        const values = this.pipes.map(p => p.get());
+    protected updateTick(): number | null {
+        return Math.max(...this.pipes.map(p => p.getTick()));
+        //return this.pipes.reduce((max, pipe) => Math.max() , 0)
+    }
 
-        if (values.some(v => v instanceof PipeSignal || v === undefined)) {
-            // TODO: If we introduce more special signals, we have to think about how they combine here.
-            return PipeSignal.noValue;
+    protected updateValues(): Array<Array<any>> {
+        const latestValues = this.pipes.map(pipe => pipe.get());
+
+        if (latestValues.some(val => val == undefined)) {
+            return [];
         }
         else {
-            return values;
+            return [latestValues];
         }
-    }
-
-    get hasMemory() { return false; }
-
-    subscribePing(onPing: () => void, trace: TraceFunction<Array<any>>): () => void {
-        this.debug("Subscribing");
-
-        const allSubscriptions = this.pipes.map(p => p.subscribePing(onPing, () => [this, ...trace()]));
-        return () => allSubscriptions.forEach(unsub => unsub());
     }
 }
 
 export class CombinedPipeLabeled<TTemplate extends LabeledPipes> extends Pipe<CombinedLabeled<TTemplate>> {
 
-    public readonly template: LabeledPipes;
-
     constructor(
-        templateObj: TTemplate
+        public readonly template: TTemplate
     ) {
         super();
-
-        this.template = {};
-        for (let key in templateObj) {
-            this.template[key] = templateObj[key].remember();
-        }
     }
 
-    public get(): CombinedLabeled<TTemplate> | PipeSignal {
+    protected updateTick(): number | null {
+        return Object.values(this.template).reduce((max, pipe) => Math.max(max, pipe.getTick()), -1);
+    }
+
+    protected updateValues(): Array<CombinedLabeled<TTemplate>> | null {
         const result: { [key: string]: any } = {};
 
         for (let key in this.template) {
             const childValue = this.template[key].get();
 
-            if (childValue instanceof PipeSignal) {
-                return PipeSignal.noValue;
+            if (childValue === undefined) {
+                return null;
             }
 
             result[key] = childValue;
         }
 
-        return result;
-    }
-
-    get hasMemory() { return false; }
-
-    subscribePing(onPing: () => void, trace: TraceFunction<CombinedLabeled<TTemplate>>): () => void {
-        this.debug("Subscribing");
-
-        const allSubscriptions = Object.values(this.template).map(p => p.subscribePing(onPing, () => [this, ...trace()]));
-        return () => allSubscriptions.forEach(unsub => unsub());
+        return [<CombinedLabeled<TTemplate>>result];
     }
 }
 
 export class MergedPipe extends Pipe<any> {
-    private readonly recentPipes: RecencyList<Pipe<any>>
 
-    constructor(public readonly pipes: Array<Pipe<any>>) {
+    private lastTicks: Array<number>;
+
+    constructor(
+        public readonly pipes: Array<Pipe<any>>
+    ) {
         super();
-        this.recentPipes = new RecencyList(pipes);
+        this.listenTo(...pipes);
+        this.lastTicks = pipes.map(_ => -1);
     }
 
-    public get() {
-        for (let pipe of this.recentPipes) {
-            const value = pipe.get();
-            if (!(value instanceof PipeSignal)) {
-                return value;
-            }
-        }
-
-        return PipeSignal.noValue;
+    protected updateTick(): number | null {
+        return this.pipes.reduce((max, pipe) => Math.max(max, pipe.getTick()), -1);
     }
 
-    get hasMemory() { return false; }
-
-    get pipesInRecencyOrder() {
-        return [...this.recentPipes];
-    }
-
-    subscribePing(onPing: () => void, trace: TraceFunction<any>): () => void {
-        this.debug("Subscribing");
-
-        const allSubscriptions = this.recentPipes.items.map(p => p.subscribePing(
-            () => this.pingFrom(p, onPing),
-            () => [this, ...trace()]
-        ));
-
-        return () => allSubscriptions.forEach(unsub => unsub());
-    }
-
-    private pingFrom(pipe: Pipe<any>, onPing: () => void) {
-        this.recentPipes.setHead(pipe);
-
-        setTimeout(() => {
-            const value = pipe.get();
-            if (!(value instanceof PipeSignal)) {
-                // Do not send a ping if the pipe does not have a value. Otherwise,
-                // we can accidentally re-send a previous value from another pipe.
-                onPing();
-            }
-        }, 0);
+    protected updateValues(): Array<any> {
+        const changedPipes = this.pipes.filter((pipe, i) => pipe.getTick() > this.lastTicks[i]);
+        this.lastTicks = this.pipes.map(pipe => pipe.getTick());
+        return changedPipes.map(pipe => pipe.getAll()).flat();
     }
 }
 
 export class FixedPipe<T> extends Pipe<T> {
+
     constructor(
-        public readonly value: T
+        value: T
     ) {
         super();
+        this.postValues([value]);
     }
 
-    public get(): T | PipeSignal {
-        return this.value;
+    protected updateTick(): number | null {
+        return null;
     }
 
-    get hasMemory() { return true; }
-
-    subscribePing(onPing: () => void, trace: TraceFunction<T>): () => void {
-        this.debug("Subscribing");
-
-        // Let the subscriber know a value is immediately available.
-        onPing();
-        return doNothing;
+    protected updateValues(): Array<T> | null {
+        return null;
     }
 }
 
 export class EmptyPipe<T> extends Pipe<T> {
-    public get(): T | PipeSignal {
-        return PipeSignal.noValue;
-    }
-
-    get hasMemory() { return true; }
-
-    subscribePing(onPing: () => void, trace: TraceFunction<T>): () => void {
-        this.debug("Subscribing");
-        return doNothing;
-    }
-}
-
-export class FlatteningPipe<T> extends Pipe<T> {
-
-    private lastPipe: Pipe<T> | null;
-    private unsubscribe: () => void;
-    private awaitingResubscribe: boolean;
-
-    public readonly source: Pipe<Pipe<T>>;
-    private readonly subs: SubscriptionHolder;
-
-    constructor(
-        sourcePipeOfPipes: Pipe<Pipe<T>>
-    ) {
+    constructor() {
         super();
-        this.source = sourcePipeOfPipes.remember();
-        this.subs = new SubscriptionHolder();
-        this.unsubscribe = doNothing;
-        this.lastPipe = null;
-        this.awaitingResubscribe = false;
-
-        // This doesn't need to be unsubscribed from because the subscribed object has the same lifetime as the subscribing.
-        this.subs.proxySubscribePing(this.source, () => this.onNewPing(), () => [this]);
     }
 
-    public get(): T | PipeSignal {
-        if (this.lastPipe == null) {
-            this.resubscribe();
-        }
-
-        if (this.lastPipe == null || this.lastPipe instanceof PipeSignal) {
-            return PipeSignal.noValue;
-        }
-
-        return this.lastPipe.get();
+    protected updateTick(): number | null {
+        return -1;
     }
 
-    private onNewPing() {
-        if (!this.awaitingResubscribe) {
-            this.awaitingResubscribe = true;
-            setTimeout(() => this.resubscribe(), 0);
-            this.subs.sendPing();
-        }
-    }
-
-    private resubscribe() {
-        this.awaitingResubscribe = false;
-
-        const nextPipe = this.source.get();
-
-        if (nextPipe instanceof PipeSignal || this.lastPipe === nextPipe) {
-            return;
-        }
-        else {
-            // Wait to unsubscribe to prevent thrashing off/on
-            const unsubOld = this.unsubscribe;
-            this.lastPipe = nextPipe;
-            this.unsubscribe = nextPipe.subscribePing(() => this.subs.sendPing(), () => [this, ...this.subs.trace()]);
-            unsubOld();
-        }
-    }
-
-    get hasMemory() { return false; }
-
-    subscribePing(onPing: () => void, trace: TraceFunction<T>): () => void {
-        this.debug("Subscribing");
-        return this.subs.subscribePing(onPing, trace);
-    }
-
-    trace() {
-        return [this, ...this.subs.trace()];
-    }
-}
-
-export class FlatteningPipeConcurrent<T> extends Pipe<T> {
-    public readonly source: Pipe<Pipe<T>>;
-    private readonly seenPipes: PipeCollection<T>;
-
-    constructor(
-        sourcePipeOfPipes: Pipe<Pipe<T>>
-    ) {
-        super();
-        this.source = sourcePipeOfPipes.remember();
-        this.seenPipes = new PipeCollection();
-
-        // This doesn't need to be unsubscribed from because the subscribed object has the same lifetime as the subscribing.
-        this.seenPipes.subs.proxySubscribePing(this.source, () => this.seenPipes.subs.sendPing(), () => [this]);
-    }
-
-    public get(): T | PipeSignal {
-
-        const currentPipe = this.source.get();
-
-        if (currentPipe instanceof PipeSignal) {
-            return currentPipe;
-        }
-
-        if (!this.seenPipes.has(currentPipe)) {
-            this.seenPipes.add(currentPipe);
-        }
-
-        return this.seenPipes.get();
-    }
-
-    get hasMemory() { return false; }
-
-    subscribePing(onPing: () => void, trace: TraceFunction<T>): () => void {
-        this.debug("Subscribing");
-        return this.seenPipes.subscribePing(onPing, trace);
-    }
-
-    trace() {
-        return [this, ...this.seenPipes.trace()];
+    protected updateValues(): Array<T> {
+        return [];
     }
 }
 
 export class DelayingPipe<T> extends Pipe<T> {
 
-    private currentSignal: T | PipeSignal;
-    private readonly subs: SubscriptionHolder;
+    private lastSourceTick = -1;
 
     constructor(
-        private source: Pipe<T>,
-        private delayMilliseconds: number
+        public readonly source: Pipe<T>,
+        public readonly delayMilliseconds: number
     ) {
         super();
-        this.currentSignal = PipeSignal.noValue;
-        this.subs = new SubscriptionHolder();
-        this.subs.proxySubscribePing(source, () => this.onSourcePing(), () => [this]);
+        this.listenTo(source);
     }
 
-    private onSourcePing() {
-        let lastSignal: T | PipeSignal;
+    protected onPing() {
 
-        // Get the value on the next frame, but wait to update it.
+        let lastValues: Array<T>;
+
         setTimeout(() => {
-            lastSignal = this.source.get();
+            if (this.source.getTick() > this.lastSourceTick) {
+                this.lastSourceTick = this.source.getTick();
+                lastValues = this.source.getAll();
+            }
         }, 0);
 
-        // Wait to update the current signal value and send a ping synchronously.
-        // Keep as a separate timeout: this prevents the additional frame above from adding to our delay.
         setTimeout(() => {
-            this.currentSignal = lastSignal;
-            this.subs.sendPing();
-        }, this.delayMilliseconds)
+            if (lastValues != null) {
+                this.postValues(lastValues);
+            }
+        }, this.delayMilliseconds);
     }
 
-    get hasMemory() {
-        // This stream behaves slightly differently than a remembered version of itself,
-        // because a "never mind" signal overwrites its cached value.
-        return false;
+    protected updateTick(): number | null {
+        return null;
     }
 
-    public get(): T | PipeSignal {
-        return this.currentSignal;
-    }
-
-    subscribePing(onPing: () => void, trace: TraceFunction<T>): () => void {
-        this.debug("Subscribing");
-        return this.subs.subscribePing(onPing, trace);
-    }
-
-    trace() {
-        return [this, ...this.subs.trace()];
+    protected updateValues(): Array<T> | null {
+        return null;
     }
 }
 
 export class FallbackPipe<T> extends Pipe<T> {
+
     constructor(
         public readonly source: Pipe<T>,
         public readonly getFallbackValue: () => T
     ) {
         super();
+        this.listenTo(source);
     }
 
-    public get(): T | PipeSignal {
-        const value = this.source.get();
-
-        if (value instanceof PipeSignal || value === undefined) {
-            return this.getFallbackValue();
-        }
-        else {
-            return value;
-        }
+    protected updateTick(): number | null {
+        return Math.max(0, this.source.getTick());
     }
 
-    get hasMemory() { return false; }
-
-    subscribePing(onPing: () => void, trace: TraceFunction<T>): () => void {
-        this.debug("Subscribing");
-        return this.source.subscribePing(onPing, () => [this, ...trace()]);
+    protected updateValues(): Array<T> {
+        const sourceVals = this.source.getAll();
+        return sourceVals.length === 0 ? [this.getFallbackValue()] : sourceVals;
     }
 }
 
 export class FallbackInnerPipe<T> extends Pipe<T> {
-
-    private lastPrimaryHadValue: boolean;
 
     constructor(
         public readonly source: Pipe<T>,
         public readonly fallBackTo: Pipe<T>
     ) {
         super();
-        this.lastPrimaryHadValue = false;
+        this.listenTo(source, fallBackTo);
     }
 
-    public get(): T | PipeSignal {
-        const value = this.source.get();
+    protected updateTick(): number | null {
+        const sourceVals = this.source.getAll();
+        return sourceVals.length === 0 ? this.fallBackTo.getTick() : this.source.getTick();
+    }
 
-        if (value instanceof PipeSignal) {
-            this.lastPrimaryHadValue = false;
-            return this.fallBackTo.get();
+    protected updateValues(): Array<T> {
+        const sourceVals = this.source.getAll();
+        return sourceVals.length === 0 ? this.fallBackTo.getAll() : sourceVals;
+    }
+}
+
+export class FlatteningPipe<T> extends Pipe<T> {
+
+    private currentPipe: Pipe<T>;
+    private lastSourceTick: number = -1;
+
+    constructor(
+        public readonly source: Pipe<Pipe<T>>
+    ) {
+        super();
+        this.currentPipe = Pipe.empty<T>();
+        this.listenTo(source);
+    }
+
+    protected updateTick(): number | null {
+        if (this.source.getTick() > this.lastSourceTick) {
+            this.resubscribe();
+
+            const nextValue = this.currentPipe.get();
+
+            // Swapping to an empty pipe should not update the flattened pipe's tick (no new value).
+            // Swapping to a pipe with a stale value (e.g. fixed) should count as a new value for this pipe.
+            return nextValue == null ? null : Math.max(this.source.getTick(), this.currentPipe.getTick());
         }
         else {
-            this.lastPrimaryHadValue = true;
-            return value;
+            return this.currentPipe.getTick();
         }
     }
 
-    get hasMemory() { return false; }
+    private resubscribe() {
+        const nextPipe = this.source.get() ?? Pipe.empty<T>();
 
-    subscribePing(onPing: () => void, trace: TraceFunction<T>): () => void {
-        this.debug("Subscribing");
+        //if (this.lastPipe != null) {
+        this.unlisten(this.currentPipe);
+        //}
 
-        const unsubPrimary = this.source.subscribePing(onPing, () => [this, ...trace()]);
+        this.listenTo(nextPipe);
+        this.currentPipe = nextPipe;
+        this.lastSourceTick = this.source.getTick();
+    }
 
-        const unsubFallback = this.fallBackTo.subscribePing(() => {
-            // Suppress pings if the primary pipe currently has a value.
-            // If the primary updates to no value at the same time as the fallback pings, the ping goes through anyway via the primary subscription.
-            if (!this.lastPrimaryHadValue) {
-                onPing();
-            }
-        }, () => [this, ...trace()]);
+    protected updateValues(): Array<T> {
+        // UpdateTick is guaranteed to have been called, so we don't need to worry about resubscribing.
+        return this.currentPipe.getAll();
+    }
+}
 
-        return () => {
-            unsubPrimary();
-            unsubFallback();
-        };
+export class FlatteningPipeConcurrent<T> extends Pipe<T> {
+
+    private lastSourceTick: number = -1;
+    private allPipes = new Set<Pipe<T>>();
+    private lastTicks = new Map<Pipe<T>, number>();
+
+    constructor(
+        public readonly source: Pipe<Pipe<T>>
+    ) {
+        super();
+        this.listenTo(source);
+    }
+
+    protected updateTick(): number | null {
+        if (this.source.getTick() > this.lastSourceTick) {
+            this.lastSourceTick = this.source.getTick();
+
+            this.source.getAll().forEach(pipe => {
+                this.allPipes.add(pipe);
+                this.lastTicks.set(pipe, -1);
+                this.listenTo(pipe);
+            });
+        }
+
+        return [...this.allPipes.values()].reduce((max, pipe) => Math.max(max, pipe.getTick()), -1);
+    }
+
+    protected updateValues(): Array<T> {
+        // UpdateTick is guaranteed to have been called, so we don't need to worry about new pipes.
+        const changedPipes = [...this.allPipes.values()].filter(pipe => pipe.getTick() > this.lastTicks.get(pipe));
+        changedPipes.forEach(pipe => this.lastTicks.set(pipe, pipe.getTick()));
+        return changedPipes.map(pipe => pipe.getAll()).flat();
     }
 }
 
 export class ErrorCatchingPipe<T, TError> extends Pipe<T | TError> {
+
     constructor(
-        private source: Pipe<T>,
-        private onError: (err: any) => TError | PipeSignal | undefined | void
+        public readonly source: Pipe<T>,
+        public readonly onError: (err: any) => TError | undefined | void
     ) {
         super();
+        this.listenTo(source);
     }
 
-    public get(): T | TError | PipeSignal {
+    protected updateTick(): number | null {
         try {
-            return this.source.get();
-        } catch (err) {
-
-            let replacement = this.onError(err);
-            if (replacement === undefined) {
-                replacement = PipeSignal.noValue;
-            }
-
-            return <T | TError | PipeSignal>replacement!;
+            return this.source.getTick();
+        }
+        catch (err) {
+            return Pipe.globalTick;
         }
     }
 
-    get hasMemory() { return false; }
-
-    subscribePing(onPing: () => void, trace: TraceFunction<T>): () => void {
-        this.debug("Subscribing");
-        return this.source.subscribePing(onPing, () => [this, ...trace()]);
+    protected updateValues(): Array<T | TError> {
+        try {
+            return this.source.getAll();
+        }
+        catch (err) {
+            const replacement = this.onError(err);
+            if (replacement === undefined) {
+                return [];
+            }
+            else {
+                return [<TError>replacement];
+            }
+        }
     }
 }
 
-export class DebouncingPipe<T> extends Pipe<Array<T>> {
+export class DebouncingPipe<T> extends Pipe<T> {
 
     private lastPingTime: number;
     private timeoutHandle: number;
     private bufferedValues: Array<T>;
-    private subs: SubscriptionHolder;
     private isPending: boolean;
+    private lastCollectedTick: number;
 
     constructor(
-        private source: Pipe<T>,
-        private debounceTimeMs: number
+        public readonly source: Pipe<T>,
+        public readonly debounceTimeMs: number
     ) {
         super();
+        this.listenTo(source);
         this.bufferedValues = [];
         this.lastPingTime = 0;
         this.timeoutHandle = 0;
-        this.subs = new SubscriptionHolder();
-        this.subs.proxySubscribePing(source, () => this.onSourcePing(), () => [this]);
         this.isPending = false;
+        this.lastCollectedTick = -1;
     }
 
-    public get(): T[] | PipeSignal {
-        return this.bufferedValues;
-    }
-
-    get hasMemory() { return false; }
-
-    private onSourcePing() {
-
+    protected onPing() {
         if (this.isPending) {
             return;
         }
@@ -1336,16 +931,22 @@ export class DebouncingPipe<T> extends Pipe<Array<T>> {
         this.lastPingTime = Date.now();
         this.isPending = true;
 
-        // All logic below depends on getting the value of the source stream, so we wrap it
-        // behind a 0-delay timeout
         setTimeout(() => {
 
             this.isPending = false;
 
-            const value = this.source.get();
+            const sourceTick = this.source.getTick();
+            if (sourceTick <= this.lastCollectedTick) {
+                // We've already buffered these values. TODO: Does this line ever actually run? Why?
+                return;
+            }
 
-            if (value instanceof PipeSignal) {
-                // Completely ignore non-value signals
+            this.lastCollectedTick = sourceTick;
+
+            const values = this.source.getAll();
+
+            if (values.length === 0) {
+                // If the stream has no current value, completely ignore it and don't update the timers.
                 return;
             }
 
@@ -1355,226 +956,90 @@ export class DebouncingPipe<T> extends Pipe<Array<T>> {
             }
 
             if (delta > this.debounceTimeMs) {
-                this.bufferedValues = [value];
+                this.bufferedValues = values;
             }
             else {
-                this.bufferedValues.push(value);
+                this.bufferedValues = this.bufferedValues.concat(values);
             }
 
             // The TS compiler doesn't get the return type right without "window." here; confusing it with a different setTimeout method?
-            this.timeoutHandle = window.setTimeout(() => this.subs.sendPing(), this.debounceTimeMs);
+            this.timeoutHandle = window.setTimeout(() => this.postValues(this.bufferedValues), this.debounceTimeMs);
 
         }, 0);
-
     }
 
-    subscribePing(onPing: () => void, trace: TraceFunction<T>): () => void {
-        this.debug("Subscribing");
-        return this.subs.subscribePing(onPing, trace);
+    protected updateTick(): number | null {
+        return null;
     }
 
-    trace() {
-        return [this, ...this.subs.trace()];
+    protected updateValues(): Array<T> | null {
+        return null;
     }
 }
 
 export class AccumulatingPipe<TIn, TState> extends Pipe<TState> {
 
-    private isDirty: boolean;
-    private currentValue: TState;
-    private readonly subs: SubscriptionHolder;
+    private lastSourceTick = -1;
+    private lastValue: TState;
 
     constructor(
-        private source: Pipe<TIn>,
-        private accumulate: (state: TState, value: TIn) => TState,
+        public readonly source: Pipe<TIn>,
+        public readonly accumulate: (state: TState, value: TIn) => TState,
         seed: TState
     ) {
         super();
-        this.currentValue = seed;
-        this.isDirty = false;
-        this.subs = new SubscriptionHolder();
-
-        // Use a subscription holder to ensure at most one subscription to the source. Otherwise this.isDirty can be set inappropriately
-        // on new subscriptions if a tributary of this.source calls onPing immediately.
-        // This doesn't need to be unsubscribed from because the subscribed object has the same lifetime as the subscribing.
-        this.subs.proxySubscribePing(this.source, () => this.onSourcePing(), () => [this]);
+        this.listenTo(source);
+        this.lastValue = seed;
+        this.postValues([seed]);
     }
 
-    private onSourcePing() {
-        this.isDirty = true;
-        this.subs.sendPing();
+    protected updateTick(): number | null {
+        return this.source.getTick();
     }
 
-    public get(): TState | PipeSignal {
-        if (!this.isDirty) {
-            return this.currentValue;
-        }
+    protected updateValues(): Array<TState> | null {
+        if (this.source.getTick() > this.lastSourceTick) {
+            this.lastSourceTick = this.source.getTick();
+            const newValues = this.source.getAll();
 
-        this.isDirty = false;
-        const newValue = this.source.get();
+            if (newValues.length === 0) {
+                return null;
+            }
 
-        if (newValue instanceof PipeSignal) {
-            return this.currentValue;
+            this.lastValue = newValues.reduce(this.accumulate, this.lastValue)
+            return [this.lastValue];
         }
         else {
-            this.currentValue = this.accumulate(this.currentValue, newValue);
-            return this.currentValue;
+            return null;
         }
-    }
-
-    get hasMemory() { return true; }
-
-    subscribePing(onPing: () => void, trace: TraceFunction<TState>): () => void {
-        this.debug("Subscribing");
-
-        if (this.currentValue !== undefined) {
-            onPing();
-        }
-
-        return this.subs.subscribePing(onPing, trace);
-
-
-        //return this.source.subscribePing(() => {
-        //    this.isDirty = true;
-        //    onPing();
-        //}, () => [this, ...trace()]);
     }
 }
 
-export class PipeCollection<T> extends Pipe<T> {
-    private readonly pipes: Set<Pipe<T>>;
-    public readonly subs: SubscriptionHolder;
+export class State<T> extends Pipe<T> {
 
-    private mergedPipe: Pipe<T>
-    private unsubscribe: () => void;
+    static new<T>(initialValue?: T) {
+        const state = new State<T>();
 
-    constructor() {
-        super();
-        this.pipes = new Set<Pipe<T>>();
-        this.subs = new SubscriptionHolder();
-        this.mergedPipe = Pipe.empty<T>();
-        this.unsubscribe = doNothing;
-    }
-
-    get(): T | PipeSignal {
-        return this.mergedPipe.get();
-    }
-
-    get hasMemory() { return false; }
-
-    get members() {
-        return [...this.pipes.values()];
-    }
-
-    subscribePing(onPing: () => void, trace: TraceFunction<T>): () => void {
-        this.debug("Subscribing");
-        return this.subs.subscribePing(onPing, trace);
-    }
-
-    add(...pipesToAdd: Array<Pipe<T>>) {
-        for (let pipe of pipesToAdd) {
-            this.pipes.add(pipe);
+        if (initialValue !== undefined) {
+            state.set(initialValue);
         }
 
-        this.remerge();
+        return state;
     }
 
-    has(pipe: Pipe<T>) {
-        return this.pipes.has(pipe);
-    }
+    public readonly set: (newValue: T) => void;
 
-    remove(...pipesToRemove: Array<Pipe<T>>) {
-        for (let pipe of pipesToRemove) {
-            this.pipes.delete(pipe);
-        }
-
-        this.remerge();
-    }
-
-    trace() {
-        return [this, ...this.subs.trace()];
-    }
-
-    private remerge() {
-        // Wait to unsubscribe from the existing stream. This helps prevent an unncessary cycle of shutoff/startup procedures by preventing
-        // the subscriber counts of upstream pipes from hitting 0.
-        const cleanup = this.unsubscribe;
-
-        this.mergedPipe = Pipe.merge(...this.pipes.values());
-        this.unsubscribe = this.subs.proxySubscribePing(this.mergedPipe, () => this.subs.sendPing(), () => [this]);
-
-        cleanup();
-
-        // Let subscribers know something might have changed, but wait in case
-        // synchronous subscriptions are still coming up.
-        setTimeout(() => this.subs.sendPing(), 0);
-    }
-}
-
-/**
- * Combines the functionality of State and PipeCollection to provide
- * very general usage for sending or linking inputs
- * */
-export class PipeInput<T = null> extends Pipe<T> {
-
-    private state: State<T>;
-    private collection: PipeCollection<T>;
-    private merged: Pipe<T>;
-
-    constructor(initialValue?: T) {
+    constructor(
+    ) {
         super();
-        this.state = State.new<T>(initialValue);
-        this.collection = new PipeCollection<T>();
-        this.merged = Pipe.merge(this.state, this.collection);
-    }
 
-    public get(): PipeSignal | T {
-        return this.merged.get();
-    }
-
-    get hasMemory() { return false; }
-
-    subscribePing(onPing: () => void, trace: TraceFunction<T>): () => void {
-        this.debug("Subscribing");
-        return this.merged.subscribePing(onPing, () => [this, ...trace()]);
-    }
-
-    add(...pipesToAdd: Array<Pipe<T>>) {
-        this.collection.add(...pipesToAdd);
-    }
-
-    remove(...pipesToRemove: Array<Pipe<T>>) {
-        this.collection.remove(...pipesToRemove);
-    }
-
-    set(newValue: T) {
-        this.state.set(newValue);
-    }
-
-    call(this: PipeInput<null>) {
-        this.state.set(null);
-    }
-
-    asPipe(): Pipe<T> {
-        return this;
-    }
-
-    asState(): State<T> {
-        return this.state.focus({
-            get: () => this.merged.get(),
-            set: (value) => orig => {
-                return (value instanceof PipeSignal) ? orig : value;
-            }
-        }) as any;
-    }
-
-    trace() {
-        // Any subscribers must also be subscribed to this state, so we can just start tracing there.
-        return [this, ...this.state.trace()];
+        // Declaring with an arrow function allows point-free usage, such as
+        // { onclick: state.set } instead of { onclick: e => state.set(e) }
+        this.set = val => this.postSingleValue(val);
     }
 
     /**
-     * Changes the current value to a new value by applying the given transformation.
+     * Changes the value of this State object to a new value by applying the given transformation.
      */
     update(transform: (currentValue: T) => T) {
         // What do we do when we don't have any value yet? We have a few options:
@@ -1598,13 +1063,84 @@ export class PipeInput<T = null> extends Pipe<T> {
         this.update(transform);
     }
 
+    protected updateTick(): number | null {
+        return null;
+    }
 
-    static new<T>(initialValue?: T) {
-        return new PipeInput<T>(initialValue);
+    protected updateValues(): Array<T> | null {
+        return null;
+    }
+}
+
+export class Action<T = null> extends Pipe<T> {
+
+    public readonly call: ActionCallSignature<T>;
+
+    constructor(
+    ) {
+        super();
+        this.call = <any>((val: any) => this.postSingleValue(val === undefined ? null : val));
+
+    }
+
+    protected updateTick(): number | null {
+        return null;
+    }
+
+    protected updateValues(): Array<T> | null {
+        return null;
+    }
+}
+
+export class GatingPipe<T> extends Pipe<T> {
+
+    constructor(
+        public readonly gatingValues: Pipe<T>,
+        public readonly gatingSignals: Pipe<any>
+    ) {
+        super();
+        this.listenTo(gatingSignals);
+    }
+
+    protected updateTick(): number | null {
+        return this.gatingSignals.getTick();
+    }
+
+    protected updateValues(): Array<T> {
+        return this.gatingValues.getAll();
+    }
+}
+
+export class ProducerPipe<T> extends Pipe<T> {
+
+    constructor(
+        public readonly activate: (send: (value: T) => void) => ShutdownFunction
+    ) {
+        super();
+
+        const send = (value: T) => this.postSingleValue(value);
+
+        let deactivate: ShutdownFunction = () => { };
+
+        // TODO: Should the activate function be behind a 0-timeout?
+        this.onFirstListenerAdded(() => deactivate = activate(send));
+        this.onLastListenerRemoved(() => {
+            deactivate();
+            deactivate = () => { };
+        });
+    }
+
+    protected updateTick(): number | null {
+        return null;
+    }
+
+    protected updateValues(): Array<T> | null {
+        return null;
     }
 }
 
 export class ConditionAssertingPipe<T> extends Pipe<T> {
+
     private getFailureMessage: ((failedValue: T) => string);
     private sourceTrace: string | undefined;
 
@@ -1614,170 +1150,109 @@ export class ConditionAssertingPipe<T> extends Pipe<T> {
         failureMessage: string | ((failedValue: T) => string)
     ) {
         super();
+        this.listenTo(source);
         this.getFailureMessage = (typeof failureMessage === 'string' ? (val => failureMessage) : failureMessage);
         this.sourceTrace = new Error("\n---Source Trace---").stack;
     }
 
-    get(): T | PipeSignal {
-        const val = this.source.get();
+    protected updateTick(): number | null {
+        return this.source.getTick();
+    }
 
-        if (val instanceof PipeSignal) {
-            return val;
+    protected updateValues(): Array<T> | null {
+        const values = this.source.getAll();
+
+        if (values.length === 0) {
+            return values;
         }
-        else if (!this.assertion(val)) {
-            throw new Error(`${this.getFailureMessage(val)}\n${this.sourceTrace}\n---Pipe Trace---`);
+        else if (values.some(val => !this.assertion(val))) {
+            const failingValue = values.find(val => !this.assertion(val));
+            throw new Error(`${this.getFailureMessage(failingValue)}\n${this.sourceTrace}\n---Pipe Trace---`);
         }
         else {
-            return val;
+            return values;
         }
-    }
-
-    get hasMemory() { return false; }
-
-    subscribePing(onPing: () => void, trace: TraceFunction<T>): () => void {
-        this.debug("Subscribing");
-        return this.subscribePing(onPing, () => [this, ...trace()]);
     }
 }
 
-export class ProducerPipe<T> extends Pipe<T> {
-    private subs: SubscriptionHolder;
-    private deactivate: () => void;
-    private lastValue: T | PipeSignal | undefined;
+/**
+ * Provides very general usage for sending values or linking inputs
+ */
+export class PipeInput<T = null> extends Pipe<T> {
+
+    private readonly pipes = new Set<Pipe<T>>();
+    private readonly lastTicks = new Map<Pipe<T>, number>();
+    private readonly state: State<T>;
+
+    constructor(initialValue?: T) {
+        super();
+        this.state = State.new(initialValue);
+        this.lastTicks.set(this.state, -1);
+        this.listenTo(this.state);
+    }
+
+    add(...pipesToAdd: Array<Pipe<T>>) {
+        for (let pipe of pipesToAdd) {
+            this.pipes.add(pipe);
+            this.lastTicks.set(pipe, -1);
+            this.listenTo(pipe);
+        }
+    }
+
+    remove(...pipesToRemove: Array<Pipe<T>>) {
+        for (let pipe of pipesToRemove) {
+            this.pipes.delete(pipe);
+            this.lastTicks.delete(pipe);
+            this.unlisten(pipe);
+        }
+    }
+
+    has(pipe: Pipe<T>) {
+        return this.pipes.has(pipe);
+    }
+
+    get members() {
+        return [...this.pipes.values()];
+    }
+
+    set(newValue: T) {
+        this.state.set(newValue);
+    }
+
+    call(this: PipeInput<null>) {
+        this.state.set(null);
+    }
+
+    protected updateTick(): number | null {
+        return [...this.pipes.values(), this.state].reduce((max, pipe) => Math.max(max, pipe.getTick()), -1);
+    }
+
+    protected updateValues(): Array<T> {
+        const changedPipes = [...this.pipes.values(), this.state].filter(pipe => pipe.getTick() > this.lastTicks.get(pipe));
+        changedPipes.forEach(pipe => this.lastTicks.set(pipe, pipe.getTick()));
+        return changedPipes.flatMap(o => o.getAll());
+    }
+}
+
+/*
+
+export class TemplatePipe<T> extends Pipe<T> {
 
     constructor(
-        public activate: (send: SendSignal<T>) => ShutdownFunction
     ) {
         super();
-
-        this.deactivate = () => { };
-        this.subs = new SubscriptionHolder();
-        this.subs.proxyLink(
-            () => {
-                this.deactivate = activate(val => this.send(val));
-            },
-            () => {
-                this.deactivate();
-                this.lastValue = undefined;
-            }
-        );
     }
 
-    private send(value: T | PipeSignal) {
-        this.lastValue = value;
-        this.subs.sendPing();
+    protected updateTick(): number | null {
+
     }
 
-    public get(): T | PipeSignal {
-        if (this.lastValue === undefined) {
-            return PipeSignal.noValue;
-        }
+    protected updateValues(): Array<T> {
 
-        return this.lastValue;
-    }
-
-    get hasMemory() { return false; }
-
-    subscribePing(onPing: () => void, trace: TraceFunction<T>): () => void {
-        this.debug("Subscribing");
-        return this.subs.subscribePing(onPing, trace);
-    }
-
-    trace() {
-        return [this, ...this.subs.trace()];
     }
 }
 
-export class Action<T = null> extends Pipe<T> {
-    private subs: SubscriptionHolder;
-    private lastValue: T | PipeSignal | undefined;
-    public readonly call: ActionCallSignature<T>;
-
-    constructor() {
-        super();
-        this.subs = new SubscriptionHolder();
-
-        // If all subscriptions to this action are closed, we want to forget the last value sent.
-        this.subs.proxyLink(
-            () => { },
-            () => {
-                this.lastValue = undefined;
-            }
-        );
-
-        this.call = <any>((value?: T | undefined) => {
-
-            if (value === undefined) {
-                // A lastValue of undefined indicates no signal has been sent yet.
-                // We use null for cases where the signal is important, but there's no specific value.
-                this.lastValue = <any>null;
-            }
-            else {
-                this.lastValue = value;
-            }
-
-            this.subs.sendPing();
-        });
-    }
-
-    public get(): T | PipeSignal {
-        return (this.lastValue === undefined) ? PipeSignal.noValue : this.lastValue;
-    }
-
-    get hasMemory() { return false; }
-
-    subscribePing(onPing: () => void, trace: TraceFunction<T>): () => void {
-        this.debug("Subscribing");
-        return this.subs.subscribePing(onPing, trace);
-    }
-
-    trace() {
-        return [this, ...this.subs.trace()];
-    }
-}
-
-export class GatingPipe<T> extends Pipe<T> {
-
-    private refreshNextValue: boolean;
-    private lastAllowedValue: T | PipeSignal;
-
-    constructor(
-        public readonly values: Pipe<T>,
-        public readonly signals: Pipe<any>
-    ) {
-        super();
-        this.refreshNextValue = false;
-        this.lastAllowedValue = PipeSignal.noValue;
-    }
-
-    subscribePing(onPing: () => void, trace: TraceFunction<T>): () => void {
-        this.debug("Subscribing");
-
-        // Ignore pings from the value stream, but still subscribe to turn everything on.
-        const unsubValues = this.values.subscribePing(() => { }, () => [this]);
-
-        const unsubSignals = this.signals.subscribePing(() => {
-            this.refreshNextValue = true;
-            onPing();
-        }, trace);
-
-        return () => {
-            unsubSignals();
-            unsubValues();
-        }
-    }
-
-    public get(): T | PipeSignal {
-        if (this.refreshNextValue) {
-            this.refreshNextValue = false;
-            this.lastAllowedValue = this.values.get();
-        }
-
-        return this.lastAllowedValue;
-    }
-
-    get hasMemory() { return false; }
-}
+*/
 
 interface ActionCallSignature<T> {
     (this: Action<null>): void;
@@ -1820,3 +1295,4 @@ export interface PipeMergeSignature {
     <T>(...items: Array<Pipe<T>>): Pipe<T>;
     (...items: Array<Pipe<any>>): Pipe<any>
 }
+
