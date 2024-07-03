@@ -211,9 +211,8 @@ export abstract class Pipe<T> {
             source.weakListeners.add(ref);
             source.checkForFirstListener();
 
-            if (source.isDirty) {
-                // If we're just starting to listen to a pipe that has already indicated it may have a new value, then we also may have a new value.
-                // TODO: Is this necessary?
+            if (source.isDirty || source.values.length > 0) {
+                // If we're just starting to listen to a pipe that has a new value (or may have one soon), then we also may have a new value soon.
                 this.onPing();
             }
         });
