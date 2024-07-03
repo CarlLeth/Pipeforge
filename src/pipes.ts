@@ -204,6 +204,8 @@ export abstract class Pipe<T> {
     }
 
     protected listenTo(...sourcePipes: Array<Pipe<any>>) {
+        Pipe.updateGlobalTick();
+
         const ref = new WeakRef(this);
         sourcePipes.forEach(source => {
             source.weakListeners.add(ref);
@@ -613,16 +615,32 @@ export class MapPipe<TSource, TEnd> extends Pipe<TEnd> {
 
 export class CombinedPipe extends Pipe<Array<any>> {
 
+    private latestTicks: Array<number>;
+
     constructor(
         public readonly pipes: Array<Pipe<any>>
     ) {
         super();
+        this.latestTicks = pipes.map(_ => -1);
         this.listenTo(...pipes);
     }
 
     protected updateTick(): number | null {
-        return Math.max(...this.pipes.map(p => p.getTick()));
-        //return this.pipes.reduce((max, pipe) => Math.max() , 0)
+
+        if (!this.pipes.some((pipe, i) => pipe.getTick() > this.latestTicks[i])) {
+            // No pipes have updated values
+            return null;
+        }
+
+        const latestValues = this.pipes.map(pipe => pipe.get());
+        if (latestValues.some(val => val === undefined)) {
+            // If any pipes have undefined values, do not emit anything.
+            return null;
+        }
+
+        this.latestTicks = this.pipes.map(pipe => pipe.getTick());
+
+        return Pipe.globalTick;
     }
 
     protected updateValues(): Array<Array<any>> {
@@ -639,20 +657,43 @@ export class CombinedPipe extends Pipe<Array<any>> {
 
 export class CombinedPipeLabeled<TTemplate extends LabeledPipes> extends Pipe<CombinedLabeled<TTemplate>> {
 
+    private latestTicks: Record<string, number>;
+
     constructor(
         public readonly template: TTemplate
     ) {
         super();
+        this.latestTicks = {};
+        for (const key in template) {
+            this.latestTicks[key] = -1;
+        }
     }
 
     protected updateTick(): number | null {
-        return Object.values(this.template).reduce((max, pipe) => Math.max(max, pipe.getTick()), -1);
+        if (!Object.keys(this.template).some(key => this.template[key].getTick() > this.latestTicks[key])) {
+            // No pipes have updated values
+            return null;
+        }
+
+        for (const key in this.template) {
+            if (this.template[key].get() === undefined) {
+                // If any pipes have undefined values, do not emit anything.
+                return null;
+            }
+        }
+
+        for (const key in this.template) {
+            this.latestTicks[key] = this.template[key].getTick();
+        }
+
+        //return Object.values(this.template).reduce((max, pipe) => Math.max(max, pipe.getTick()), -1);
+        return Pipe.globalTick;
     }
 
     protected updateValues(): Array<CombinedLabeled<TTemplate>> | null {
         const result: { [key: string]: any } = {};
 
-        for (let key in this.template) {
+        for (const key in this.template) {
             const childValue = this.template[key].get();
 
             if (childValue === undefined) {
@@ -871,7 +912,7 @@ export class FlatteningPipeConcurrent<T> extends Pipe<T> {
             });
         }
 
-        return [...this.allPipes.values()].reduce((max, pipe) => Math.max(max, pipe.getTick()), -1);
+        return [...this.allPipes.values(), this.source].reduce((max, pipe) => Math.max(max, pipe.getTick()), -1);
     }
 
     protected updateValues(): Array<T> {
