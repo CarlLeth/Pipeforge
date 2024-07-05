@@ -124,13 +124,17 @@ export abstract class Pipe<T> {
     /**
      * Recalculates and returns the latest tick value for this pipe, or null if the tick value should not change.
      */
-    protected abstract updateTick(): number | null;
+    protected updateTick(): number | null {
+        return null;
+    }
 
     /**
      * Recalculates and returns the latest values for this pipe, or null if the values should not change.
      * If this is called, it is guaranteed that updateTick was previously called for the same cycle.
      */
-    protected abstract updateValues(): Array<T> | null;
+    protected updateValues(): Array<T> | null {
+        return null;
+    }
 
     private isOn = false;
 
@@ -565,9 +569,6 @@ export abstract class Pipe<T> {
     }
 }
 
-// For debugging
-window['Pipe'] = Pipe;
-
 export class FilterPipe<T> extends Pipe<T> {
 
     constructor(
@@ -737,14 +738,6 @@ export class FixedPipe<T> extends Pipe<T> {
         super();
         this.postValues([value]);
     }
-
-    protected updateTick(): number | null {
-        return null;
-    }
-
-    protected updateValues(): Array<T> | null {
-        return null;
-    }
 }
 
 export class EmptyPipe<T> extends Pipe<T> {
@@ -789,14 +782,6 @@ export class DelayingPipe<T> extends Pipe<T> {
                 this.postValues(lastValues);
             }
         }, this.delayMilliseconds);
-    }
-
-    protected updateTick(): number | null {
-        return null;
-    }
-
-    protected updateValues(): Array<T> | null {
-        return null;
     }
 }
 
@@ -1023,14 +1008,6 @@ export class DebouncingPipe<T> extends Pipe<T> {
 
         }, 0);
     }
-
-    protected updateTick(): number | null {
-        return null;
-    }
-
-    protected updateValues(): Array<T> | null {
-        return null;
-    }
 }
 
 export class AccumulatingPipe<TIn, TState> extends Pipe<TState> {
@@ -1118,14 +1095,6 @@ export class State<T> extends Pipe<T> {
     modify(transform: (currentValue: T) => T) {
         this.update(transform);
     }
-
-    protected updateTick(): number | null {
-        return null;
-    }
-
-    protected updateValues(): Array<T> | null {
-        return null;
-    }
 }
 
 export class Action<T = null> extends Pipe<T> {
@@ -1137,14 +1106,6 @@ export class Action<T = null> extends Pipe<T> {
         super();
         this.call = <any>((val: any) => this.postSingleValue(val === undefined ? null : val));
 
-    }
-
-    protected updateTick(): number | null {
-        return null;
-    }
-
-    protected updateValues(): Array<T> | null {
-        return null;
     }
 }
 
@@ -1184,14 +1145,6 @@ export class ProducerPipe<T> extends Pipe<T> {
             deactivate();
             deactivate = () => { };
         });
-    }
-
-    protected updateTick(): number | null {
-        return null;
-    }
-
-    protected updateValues(): Array<T> | null {
-        return null;
     }
 }
 
