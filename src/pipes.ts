@@ -623,6 +623,11 @@ export class CombinedPipe extends Pipe<Array<any>> {
         super();
         this.latestTicks = pipes.map(_ => -1);
         this.listenTo(...pipes);
+
+        if (pipes.length === 0) {
+            // A combination of 0 pipes is the same a Pipe.fixed([]).
+            this.postSingleValue([]);
+        }
     }
 
     protected updateTick(): number | null {
@@ -664,8 +669,16 @@ export class CombinedPipeLabeled<TTemplate extends LabeledPipes> extends Pipe<Co
     ) {
         super();
         this.latestTicks = {};
+
+        let anyKeys = false;
         for (const key in template) {
+            anyKeys = true;
             this.latestTicks[key] = -1;
+        }
+
+        if (!anyKeys) {
+            // A labeled combination of 0 pipes is the same as Pipe.fixed({}).
+            this.postSingleValue(<CombinedLabeled<TTemplate>>{});
         }
     }
 
