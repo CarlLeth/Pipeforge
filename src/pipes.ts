@@ -1285,6 +1285,7 @@ export class UpdatingPipe<T> extends Pipe<T> {
         if (this.updates.getTick() > this.lastUpdateTick) {
             this.updates.getAll().forEach(update => val = update(val));
             this.lastUpdateTick = this.updates.getTick();
+            this.currentValue = val;
         }
 
         // Similar to fold, we can't logically buffer more than one value.
