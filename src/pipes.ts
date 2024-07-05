@@ -429,35 +429,7 @@ export abstract class Pipe<T> {
      * @param updates
      */
     withUpdates(updates: Pipe<(currentState: T) => T>): Pipe<T> {
-        return Pipe
-            .mergeLabeled({
-                value: this,
-                transition: updates
-            })
-            .fold((last, event) => {
-                if ('transition' in event) {
-                    let current = last.state;
-
-                    if (current === undefined) {
-                        current = this.get();
-                    }
-
-                    if (current === undefined) {
-                        return last;
-                    }
-                    else {
-                        return { state: event.transition!(current), emit: true };
-                    }
-                }
-                else {
-                    return { state: event.value!, emit: true }
-                }
-
-            }, { state: <T | undefined>undefined, emit: false })
-            .filter(o => o.emit)
-            .map(o => o.state)
-            .fallbackPipe(this);
-        // TODO: This probably deserves a dedicated Pipe implementation.
+        return new UpdatingPipe(this, updates);
     }
 
     withTransitions<TTransition>(transitions: Pipe<TTransition>, applyTransition: (value: T, transition: TTransition) => T): Pipe<T> {
@@ -1264,6 +1236,59 @@ export class PipeInput<T = null> extends Pipe<T> {
         const changedPipes = [...this.delayedPipes.values(), this.state].filter(pipe => pipe.getTick() > this.lastTicks.get(pipe));
         changedPipes.forEach(pipe => this.lastTicks.set(pipe, pipe.getTick()));
         return changedPipes.flatMap(o => o.getAll());
+    }
+}
+
+export class UpdatingPipe<T> extends Pipe<T> {
+
+    private lastSourceTick = -1;
+    private lastUpdateTick = -1;
+    private currentValue: T = undefined;
+
+    constructor(
+        public readonly source: Pipe<T>,
+        public readonly updates: Pipe<(currentState: T) => T>
+    ) {
+        super();
+        this.listenTo(source, updates);
+    }
+
+    protected updateTick(): number | null {
+        // A changed source always means a new value
+        if (this.source.getTick() > this.lastSourceTick) {
+            return Pipe.globalTick;
+        }
+
+        // A new update may mean a new value, if the current value can be updated (i.e. is not undefined)
+        if (this.updates.getTick() > this.lastUpdateTick && this.currentValue !== undefined) {
+            return Pipe.globalTick;
+        }
+
+        return null;
+    }
+
+    protected updateValues(): Array<T> {
+
+        // If the source has changed, set the current value to its latest.
+        if (this.source.getTick() > this.lastSourceTick) {
+            this.currentValue = this.source.get();
+            this.lastSourceTick = this.source.getTick();
+        }
+
+        let val = this.currentValue;
+
+        if (val === undefined) {
+            return null;
+        }
+
+        // If the updates stream has changed, apply all buffered updates.
+        if (this.updates.getTick() > this.lastUpdateTick) {
+            this.updates.getAll().forEach(update => val = update(val));
+            this.lastUpdateTick = this.updates.getTick();
+        }
+
+        // Similar to fold, we can't logically buffer more than one value.
+        return [val];
     }
 }
 
