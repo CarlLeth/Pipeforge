@@ -931,7 +931,6 @@ export class DebouncingPipe<T> extends Pipe<T> {
 
     private lastPingTime: number;
     private timeoutHandle: number;
-    private bufferedValues: Array<T>;
     private isPending: boolean;
     private lastCollectedTick: number;
 
@@ -941,7 +940,6 @@ export class DebouncingPipe<T> extends Pipe<T> {
     ) {
         super();
         this.listenTo(source);
-        this.bufferedValues = [];
         this.lastPingTime = 0;
         this.timeoutHandle = 0;
         this.isPending = false;
@@ -953,7 +951,6 @@ export class DebouncingPipe<T> extends Pipe<T> {
             return;
         }
 
-        const delta = Date.now() - this.lastPingTime;
         this.lastPingTime = Date.now();
         this.isPending = true;
 
@@ -969,9 +966,9 @@ export class DebouncingPipe<T> extends Pipe<T> {
 
             this.lastCollectedTick = sourceTick;
 
-            const values = this.source.getAll();
+            const value = this.source.get();
 
-            if (values.length === 0) {
+            if (value === undefined) {
                 // If the stream has no current value, completely ignore it and don't update the timers.
                 return;
             }
@@ -981,15 +978,8 @@ export class DebouncingPipe<T> extends Pipe<T> {
                 this.timeoutHandle = 0;
             }
 
-            if (delta > this.debounceTimeMs) {
-                this.bufferedValues = values;
-            }
-            else {
-                this.bufferedValues = this.bufferedValues.concat(values);
-            }
-
             // The TS compiler doesn't get the return type right without "window." here; confusing it with a different setTimeout method?
-            this.timeoutHandle = window.setTimeout(() => this.postValues(this.bufferedValues), this.debounceTimeMs);
+            this.timeoutHandle = window.setTimeout(() => this.postValues([value]), this.debounceTimeMs);
 
         }, 0);
     }
