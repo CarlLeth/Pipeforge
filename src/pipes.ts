@@ -755,6 +755,7 @@ export class DelayingPipe<T> extends Pipe<T> {
 
         let lastValues: Array<T>;
 
+        // Wait until the "ping" phase is complete before caching the value
         setTimeout(() => {
             if (this.source.getTick() > this.lastSourceTick) {
                 this.lastSourceTick = this.source.getTick();
@@ -894,6 +895,9 @@ export class FlatteningPipeConcurrent<T> extends Pipe<T> {
 
 export class ErrorCatchingPipe<T, TError> extends Pipe<T | TError> {
 
+    private lastGoodTick = -1;
+    private lastError: TError | undefined;
+
     constructor(
         public readonly source: Pipe<T>,
         public readonly onError: (err: any) => TError | undefined | void
@@ -904,25 +908,44 @@ export class ErrorCatchingPipe<T, TError> extends Pipe<T | TError> {
 
     protected updateTick(): number | null {
         try {
-            return this.source.getTick();
+            this.source.getAll(); // Just do it to see if the source is about to fire an error
+            const sourceTick = this.source.getTick();
+
+            if (this.lastError !== undefined || sourceTick > this.lastGoodTick) {
+                this.lastError = undefined;
+                this.lastGoodTick = sourceTick;
+
+                return Pipe.globalTick;
+            }
+            else {
+                return null;
+            }
         }
         catch (err) {
+            if (this.lastError !== undefined) {
+                // TODO: Can we do any better than this? This could be a new error, but can we determine that?
+                // Consider caching/comparing the error message
+                return null;
+            }
+
+            this.lastError = err;
             return Pipe.globalTick;
         }
     }
 
     protected updateValues(): Array<T | TError> {
-        try {
-            return this.source.getAll();
-        }
-        catch (err) {
-            const replacement = this.onError(err);
+
+        if (this.lastError !== undefined) {
+            const replacement = this.onError(this.lastError);
             if (replacement === undefined) {
                 return [];
             }
             else {
                 return [<TError>replacement];
             }
+        }
+        else {
+            return this.source.getAll();
         }
     }
 }
