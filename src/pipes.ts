@@ -648,6 +648,8 @@ export class CombinedPipeLabeled<TTemplate extends LabeledPipes> extends Pipe<Co
             this.latestTicks[key] = -1;
         }
 
+        this.listenTo(...Object.values(template));
+
         if (!anyKeys) {
             // A labeled combination of 0 pipes is the same as Pipe.fixed({}).
             this.postSingleValue(<CombinedLabeled<TTemplate>>{});
