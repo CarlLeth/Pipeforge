@@ -387,9 +387,11 @@ export abstract class Pipe<T> {
             equals = (a, b) => a === b;
         }
 
+        // TODO: Make this a first-class Pipe implementation
         return this
-            .fold((last, next) => (last !== undefined && equals!(last, next)) ? undefined : next, <T | undefined>undefined)
-            .filter(o => o !== undefined) as Pipe<T>;
+            .fold((last, next) => (last.val !== undefined && equals!(last.val, next)) ? { keep: false, val: next } : { keep: true, val: next }, { keep: true, val: undefined })
+            .filter(o => o.keep)
+            .map(o => o.val) as Pipe<T>;
     }
 
     asPromise(): Promise<T> {
