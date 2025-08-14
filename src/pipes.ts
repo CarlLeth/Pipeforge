@@ -19,6 +19,17 @@ function isPromise(value: any): value is PromiseLike<any> {
 
 export abstract class Pipe<T> {
 
+    public static debug = {
+        isTracing: false,
+        lastCycle: null as Pipe<any>
+    };
+
+    constructor() {
+        if (Pipe.debug.isTracing) {
+            this['trace'] = new Error();
+        }
+    }
+
     // -- Static recordkeeping --
 
     private static livePipes = new Set<Pipe<any>>();
@@ -100,6 +111,7 @@ export abstract class Pipe<T> {
 
     private updateIfNecessary() {
         if (this.isUpdating) {
+            Pipe.debug.lastCycle = this;
             throw new Error("Cycle detected", { cause: this });
         }
 
