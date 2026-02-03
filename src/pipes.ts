@@ -21,12 +21,12 @@ export abstract class Pipe<T> {
 
     public static debug = {
         isTracing: false,
-        lastCycle: null as Pipe<any>
+        lastCycle: null as Pipe<any> | null
     };
 
     constructor() {
         if (Pipe.debug.isTracing) {
-            this['trace'] = new Error();
+            (this as any)['trace'] = new Error();
         }
     }
 
@@ -401,7 +401,7 @@ export abstract class Pipe<T> {
 
         // TODO: Make this a first-class Pipe implementation
         return this
-            .fold((last, next) => (last.val !== undefined && equals!(last.val, next)) ? { keep: false, val: next } : { keep: true, val: next }, { keep: true, val: undefined })
+            .fold((last, next) => (last.val !== undefined && equals!(last.val, next)) ? { keep: false, val: next } : { keep: true, val: next }, { keep: true, val: undefined as T | undefined })
             .filter(o => o.keep)
             .map(o => o.val) as Pipe<T>;
     }
@@ -500,7 +500,7 @@ export abstract class Pipe<T> {
 
     static mergeLabeled<TTemplate extends LabeledPipes>(templateObj: TTemplate): Pipe<MergedLabeled<TTemplate>> {
         const pipesWithLabels = Object.keys(templateObj).map(key => templateObj[key].map(val => ({ [key]: val })))
-        return Pipe.merge(...pipesWithLabels) as Pipe<MergedLabeled<TTemplate>>;
+        return Pipe.merge(...pipesWithLabels) as any as Pipe<MergedLabeled<TTemplate>>;
     }
 
     static fromPromise<T>(promise: PromiseLike<T>): Pipe<T> {
@@ -903,7 +903,7 @@ export class FlatteningPipeConcurrent<T> extends Pipe<T> {
 
     protected updateValues(): Array<T> {
         // UpdateTick is guaranteed to have been called, so we don't need to worry about new pipes.
-        const changedPipes = [...this.allPipes.values()].filter(pipe => pipe.getTick() > this.lastTicks.get(pipe));
+        const changedPipes = [...this.allPipes.values()].filter(pipe => pipe.getTick() > this.lastTicks.get(pipe)!);
         changedPipes.forEach(pipe => this.lastTicks.set(pipe, pipe.getTick()));
         return changedPipes.map(pipe => pipe.getAll()).flat();
     }
@@ -937,7 +937,7 @@ export class ErrorCatchingPipe<T, TError> extends Pipe<T | TError> {
                 return null;
             }
         }
-        catch (err) {
+        catch (err: any) {
             if (this.lastError !== undefined) {
                 // TODO: Can we do any better than this? This could be a new error, but can we determine that?
                 // Consider caching/comparing the error message
@@ -1188,12 +1188,13 @@ export class ConditionAssertingPipe<T> extends Pipe<T> {
         if (values.length === 0) {
             return values;
         }
-        else if (values.some(val => !this.assertion(val))) {
-            const failingValue = values.find(val => !this.assertion(val));
-            throw new Error(`${this.getFailureMessage(failingValue)}\n${this.sourceTrace}\n---Pipe Trace---`);
+
+        const failingValue = values.find(val => !this.assertion(val));
+        if (failingValue === undefined) {
+            return values;
         }
         else {
-            return values;
+            throw new Error(`${this.getFailureMessage(failingValue)}\n${this.sourceTrace}\n---Pipe Trace---`);
         }
     }
 }
@@ -1234,8 +1235,11 @@ export class PipeInput<T = null> extends Pipe<T> {
             this.pipes.delete(pipe);
 
             const delayed = this.delayedPipes.get(pipe);
-            this.lastTicks.delete(delayed);
-            this.unlisten(delayed);
+
+            if (delayed !== undefined) {
+                this.lastTicks.delete(delayed);
+                this.unlisten(delayed);
+            }
 
             this.delayedPipes.delete(pipe);
         }
@@ -1262,7 +1266,7 @@ export class PipeInput<T = null> extends Pipe<T> {
     }
 
     protected updateValues(): Array<T> {
-        const changedPipes = [...this.delayedPipes.values(), this.state].filter(pipe => pipe.getTick() > this.lastTicks.get(pipe));
+        const changedPipes = [...this.delayedPipes.values(), this.state].filter(pipe => pipe.getTick() > this.lastTicks.get(pipe)!);
         changedPipes.forEach(pipe => this.lastTicks.set(pipe, pipe.getTick()));
         return changedPipes.flatMap(o => o.getAll());
     }
@@ -1272,7 +1276,7 @@ export class UpdatingPipe<T> extends Pipe<T> {
 
     private lastSourceTick = -1;
     private lastUpdateTick = -1;
-    private currentValue: T = undefined;
+    private currentValue: T | undefined = undefined;
 
     constructor(
         public readonly source: Pipe<T>,
@@ -1296,7 +1300,7 @@ export class UpdatingPipe<T> extends Pipe<T> {
         return null;
     }
 
-    protected updateValues(): Array<T> {
+    protected updateValues(): Array<T> | null {
 
         // If the source has changed, set the current value to its latest.
         if (this.source.getTick() > this.lastSourceTick) {
@@ -1312,7 +1316,7 @@ export class UpdatingPipe<T> extends Pipe<T> {
 
         // If the updates stream has changed, apply all buffered updates.
         if (this.updates.getTick() > this.lastUpdateTick) {
-            this.updates.getAll().forEach(update => val = update(val));
+            this.updates.getAll().forEach(update => val = update(val!));
             this.lastUpdateTick = this.updates.getTick();
             this.currentValue = val;
         }
