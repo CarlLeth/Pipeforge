@@ -32,15 +32,19 @@
     <DebugSymbols>true</DebugSymbols>
   </PropertyGroup>
   <ItemGroup>
+    <Content Include="License.txt" />
     <Content Include="package.json" />
     <Content Include="tsconfig.json" />
   </ItemGroup>
   <ItemGroup>
+    <Folder Include="test\" />
     <Folder Include="src\" />
   </ItemGroup>
   <ItemGroup>
     <TypeScriptCompile Include="src\index.ts" />
     <TypeScriptCompile Include="src\pipes.ts" />
+    <TypeScriptCompile Include="test\pipes.spec.ts" />
+    <TypeScriptCompile Include="vitest.config.ts" />
   </ItemGroup>
   <Import Project="$(VSToolsPath)\Node.js Tools\Microsoft.NodejsTools.targets" />
   <ProjectExtensions>
