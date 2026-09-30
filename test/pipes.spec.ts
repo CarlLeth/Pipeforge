@@ -337,3 +337,51 @@ describe('ErrorCatchingPipe', () => {
         expect(checked.get()).toBeUndefined();
     });
 });
+
+describe('GatingPipe', () => {
+    it('emits the latest value only when the gating pipe signals', async () => {
+        const values = Pipe.state(10);
+        const gate = Pipe.action();
+        const gated = values.gatedBy(gate);
+        const results: number[] = [];
+
+        gated.subscribe(value => results.push(value));
+        await vi.advanceTimersByTimeAsync(10);
+        expect(results).toEqual([10]);
+
+        values.set(20);
+        await vi.advanceTimersByTimeAsync(10);
+        expect(results).toEqual([10]);
+        expect(gated.get()).toBe(10);
+
+        gate.call();
+        await vi.advanceTimersByTimeAsync(10);
+        expect(results).toEqual([10, 20]);
+        expect(gated.get()).toBe(20);
+
+        // Emits again if the gate is called again.
+        gate.call();
+        await vi.advanceTimersByTimeAsync(10);
+        expect(results).toEqual([10, 20, 20]);
+        expect(gated.get()).toBe(20);
+    });
+
+    it('uses the most recent source value when multiple updates occur before a signal', async () => {
+        const values = Pipe.state('initial');
+        const gate = Pipe.action();
+        const gated = values.gatedBy(gate);
+        const results: string[] = [];
+
+        gated.subscribe(value => results.push(value));
+        await vi.advanceTimersByTimeAsync(10);
+
+        values.set('first');
+        values.set('latest');
+        await vi.advanceTimersByTimeAsync(10);
+        expect(results).toEqual(['initial']);
+        
+        gate.call();
+        await vi.advanceTimersByTimeAsync(10);
+        expect(results).toEqual(['initial', 'latest']);
+    });
+});
