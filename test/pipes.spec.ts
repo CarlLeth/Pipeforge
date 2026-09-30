@@ -1,5 +1,13 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Pipe } from '../src';
+
+beforeAll(() => {
+    vi.useFakeTimers();
+});
+
+afterAll(() => {
+    vi.useRealTimers();
+});
 
 describe('FallbackPipe', () => {
     it('provides a value when a pipe would otherwise be empty', () => {
@@ -10,8 +18,6 @@ describe('FallbackPipe', () => {
 
 describe('DelayingPipe', () => {
     it('delays signals by a set amount of time', async () => {
-
-        vi.useFakeTimers();
 
         const input = Pipe.state<number>();
         const delayed = input.delay(100);
@@ -56,8 +62,6 @@ describe('DelayingPipe', () => {
 
 describe('AccumulatingPipe', () => {
     it('accumulates values using a state-updating function', async () => {
-        vi.useFakeTimers();
-
         let result: number | undefined = undefined;
 
         const state = Pipe.state<number>();
@@ -98,8 +102,6 @@ describe('AccumulatingPipe', () => {
         // when no subscribers are active. This causes extra calls until obsolete pipes are garbage collected, but
         // significantly simplifies reasoning about the state of each pipe.
 
-        vi.useFakeTimers();
-
         const state = Pipe.state<number>();
         const sum = state.fold((state, next) => state + next, 0);
 
@@ -131,8 +133,6 @@ describe('AccumulatingPipe', () => {
 
 describe('ProducerPipe', () => {
     it('activates and disposes a producer function based on subscriptions', async () => {
-
-        vi.useFakeTimers();
 
         let timeout: NodeJS.Timeout | undefined;
 
@@ -178,8 +178,6 @@ describe('ProducerPipe', () => {
 
 describe('State', () => {
     it('can be set and read synchronously in any order', async () => {
-        vi.useFakeTimers();
-
         const number = Pipe.state(1);
         const letter = Pipe.state("a");
 
@@ -211,8 +209,6 @@ describe('State', () => {
 
 describe('FlatteningPipe', () => {
     it('emits changes when either its source pipe emits a new pipe or when the last emitted pipe emits a new value', async () => {
-        vi.useFakeTimers();
-
         const numbers = Pipe.state(1);
         const letters = Pipe.state("a");
         const selector = Pipe.state(numbers as Pipe<number | string>);
@@ -255,8 +251,6 @@ describe('FlatteningPipe', () => {
 
 describe('DebouncingPipe', () => {
     it('does not emit until the debounce interval has elapsed', async () => {
-        vi.useFakeTimers();
-
         const input = Pipe.state<number>();
         const debounced = input.debounce(100);
         const results: number[] = [];
