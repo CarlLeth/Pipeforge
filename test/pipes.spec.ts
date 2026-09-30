@@ -385,3 +385,50 @@ describe('GatingPipe', () => {
         expect(results).toEqual(['initial', 'latest']);
     });
 });
+
+describe('MapPipe', () => {
+    it('transforms each source value', () => {
+        const source = Pipe.state(3);
+        const mapped = source.map(value => value * 2);
+
+        expect(mapped.get()).toBe(6);
+
+        source.set(5);
+        expect(mapped.get()).toBe(10);
+    });
+
+    it('evaluates the projection at most once per pulled change', async () => {
+        const source = Pipe.state<number>();
+        const projection = vi.fn((value: number) => value * 10);
+        const mapped = source.map(projection);
+
+        source.set(1);
+        await vi.advanceTimersByTimeAsync(10);
+        source.set(2);
+        await vi.advanceTimersByTimeAsync(10);
+        source.set(3);
+
+        // The projection function should not be called until the value is actually broadcasted or pulled somehow.
+        expect(projection).not.toHaveBeenCalled();
+
+        expect(mapped.get()).toBe(30);
+        expect(projection).toHaveBeenCalledTimes(1);
+
+        // Multiple pulls should not cause multiple calls of the projection function if the source has not changed.
+        await vi.advanceTimersByTimeAsync(10);
+        expect(mapped.get()).toBe(30);
+        expect(projection).toHaveBeenCalledTimes(1);
+
+        await vi.advanceTimersByTimeAsync(10);
+        source.set(4);
+        expect(mapped.get()).toBe(40);
+        expect(projection).toHaveBeenCalledTimes(2);
+
+        await vi.advanceTimersByTimeAsync(10);
+        source.set(5);
+        await vi.advanceTimersByTimeAsync(10);
+        source.set(6);
+        expect(mapped.get()).toBe(60);
+        expect(projection).toHaveBeenCalledTimes(3);
+    });
+});
