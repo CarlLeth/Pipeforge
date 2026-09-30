@@ -180,3 +180,79 @@ describe('ProducerPipe', () => {
 
     });
 });
+
+describe('State', () => {
+    it('can be set and read synchronously in any order', async () => {
+        vi.useFakeTimers();
+
+        const number = Pipe.state(1);
+        const letter = Pipe.state("a");
+
+        const numlet = Pipe
+            .combine(number, letter)
+            .map(([n, l]) => `${n}${l}`);
+
+        let result = "";
+        numlet.subscribe(r => result = r);
+        await vi.advanceTimersByTimeAsync(10);
+
+        expect(result).toBe("1a");
+
+        number.set(2);
+        await vi.advanceTimersByTimeAsync(10);
+
+        expect(result).toBe("2a");
+        await vi.advanceTimersByTimeAsync(10);
+
+        number.set(3);
+        expect(numlet.get()).toBe("3a"); // Synchronously request the current value
+        number.set(4);
+        await vi.advanceTimersByTimeAsync(10);
+
+        // "3a" should never be broadcast, although this is not currently tested for
+        expect(result).toBe("4a");
+    });
+});
+
+describe('FlatteningPipe', () => {
+    it('emits changes when either its source pipe emits a new pipe or when the last emitted pipe emits a new value', async () => {
+        vi.useFakeTimers();
+
+        const numbers = Pipe.state(1);
+        const letters = Pipe.state("a");
+        const selector = Pipe.state(numbers as Pipe<number | string>);
+        const flat = selector.flatten();
+
+        let result: number | string = 0;
+        flat.subscribe(v => result = v);
+
+        await vi.advanceTimersByTimeAsync(10);
+        expect(result).toBe(1);
+
+        selector.set(letters as Pipe<number | string>);
+        await vi.advanceTimersByTimeAsync(10);
+        expect(result).toBe('a');
+
+        letters.set('b');
+        numbers.set(2);
+        await vi.advanceTimersByTimeAsync(10);
+        expect(result).toBe('b');
+
+        numbers.set(3);
+        await vi.advanceTimersByTimeAsync(10);
+        expect(result).toBe('b');
+
+        numbers.set(4);
+        selector.set(numbers as Pipe<number | string>);
+        await vi.advanceTimersByTimeAsync(10);
+        expect(result).toBe(4);
+
+        numbers.set(5);
+        await vi.advanceTimersByTimeAsync(10);
+        expect(result).toBe(5);
+
+        selector.set(letters as Pipe<number | string>);
+        await vi.advanceTimersByTimeAsync(10);
+        expect(result).toBe('b');
+    });
+});
