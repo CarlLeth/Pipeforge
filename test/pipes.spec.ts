@@ -469,3 +469,73 @@ describe('FilterPipe', () => {
         expect(filtered.getAll()).toEqual([2, 3]);
     });
 });
+
+describe('CombinedPipe', () => {
+    it('emits the latest value from every source once all sources have values', () => {
+        const number = Pipe.state(1);
+        const letter = Pipe.state('a');
+        const combined = Pipe.combine(number, letter);
+
+        expect(combined.get()).toEqual([1, 'a']);
+
+        number.set(2);
+        expect(combined.get()).toEqual([2, 'a']);
+
+        letter.set('b');
+        expect(combined.get()).toEqual([2, 'b']);
+    });
+
+    it('does not emit while any source is missing a value', () => {
+        const number = Pipe.state<number>();
+        const letter = Pipe.state('a');
+        const combined = Pipe.combine(number, letter);
+
+        expect(combined.get()).toBeUndefined();
+        expect(combined.getAll()).toEqual([]);
+
+        number.set(2);
+        expect(combined.get()).toEqual([2, 'a']);
+    });
+
+    it('combines no sources into an empty array', () => {
+        expect(Pipe.combine().get()).toEqual([]);
+    });
+
+    it('does not compute or emit intermediate combinations', async () => {
+        const results: any[] = [];
+        let error = null;
+
+        const subjects = Pipe.state<any>("a string");
+        const funcs = Pipe.state<(val: any) => any>((str: string) => {
+            try {
+                return str.length;
+            }
+            catch (err) {
+                error = err;
+                return -1;
+            }
+        });
+
+        const combined = Pipe
+            .combine(subjects, funcs)
+            .map(([val, f]) => f(val));
+
+        combined.subscribe(value => results.push(value));
+
+        await vi.advanceTimersByTimeAsync(10);
+        expect(results).toEqual(["a string".length]);
+
+        subjects.set(17);
+
+        // At this point, the function str => str.length would throw an error if called.
+        // However, values are not calculated until needed, either when pulled by .get() or
+        // when a subscriber is subscribed AND a frame has passed.
+        funcs.set((x: number) => x.toFixed(1));
+
+        await vi.advanceTimersByTimeAsync(10);
+
+        expect(results).toEqual(["a string".length, "17.0"]);
+        expect(error).toBeNull();
+    });
+});
+ 
