@@ -123,22 +123,25 @@ export abstract class Pipe<T> {
 
         if (this.isDirty) {
             this.isUpdating = true;
-            const shouldUpdate = this.shouldUpdate();
+            try {
+                const shouldUpdate = this.shouldUpdate();
 
-            // Dirty state means that a source ping was received. The update check
-            // determines whether that ping produces a value; the pipe's local version
-            // is incremented only after values have actually been recalculated.
-            if (shouldUpdate) {
-                const nextValues = this.updateValues();
+                // Dirty state means that a source ping was received. The update check
+                // determines whether that ping produces a value; the pipe's local version
+                // is incremented only after values have actually been recalculated.
+                if (shouldUpdate) {
+                    const nextValues = this.updateValues();
 
-                if (nextValues !== null) {
-                    this.values = nextValues;
-                    this.localVersion++;
+                    if (nextValues !== null) {
+                        this.values = nextValues;
+                        this.localVersion++;
+                    }
                 }
             }
-
-            this.isUpdating = false;
-            this.isDirty = false;
+            finally {
+                this.isUpdating = false;
+                this.isDirty = false;
+            }
         }
     }
     /**

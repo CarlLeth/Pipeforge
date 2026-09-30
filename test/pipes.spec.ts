@@ -290,3 +290,50 @@ describe('DebouncingPipe', () => {
         expect(results).toEqual([2]);
     });
 });
+
+describe('ErrorCatchingPipe', () => {
+    it('passes through valid values and replaces assertion failures', async () => {
+        const input = Pipe.state<number>();
+        const checked = input
+            .assert(value => value > 0, value => `${value} must be positive`)
+            .catch(error => `invalid: ${(error as Error).message}`);
+
+        const results: Array<number | string> = [];
+
+        checked.subscribe(value => results.push(value));
+
+        input.set(4);
+        await vi.advanceTimersByTimeAsync(10);
+        expect(checked.get()).toBe(4);
+        expect(results).toEqual([4]);
+
+        input.set(-2);
+        await vi.advanceTimersByTimeAsync(10);
+        expect(checked.get()).toContain('invalid: -2 must be positive');
+        expect(results[0]).toBe(4);
+        expect(results[1]).toContain('invalid: -2 must be positive');
+    });
+
+    it('recovers after a failed value when the source becomes valid again', async () => {
+        const input = Pipe.state<number>();
+        const checked = input
+            .assert(value => value >= 0, 'value must not be negative')
+            .catch(error => `error: ${(error as Error).message}`);
+
+        input.set(-1);
+        await vi.advanceTimersByTimeAsync(10);
+        expect(checked.get()).toContain('error: value must not be negative');
+
+        input.set(6);
+        await vi.advanceTimersByTimeAsync(10);
+        expect(checked.get()).toBe(6);
+    });
+
+    it('suppresses an error when the handler does not return a replacement', () => {
+        const input = Pipe.state<number>();
+        const checked = input.assert(value => value < 10, 'value is too large').catch(() => { });
+
+        input.set(10);
+        expect(checked.get()).toBeUndefined();
+    });
+});
