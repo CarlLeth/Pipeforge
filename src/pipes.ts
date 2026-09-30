@@ -34,14 +34,14 @@ export abstract class Pipe<T> {
 
     private static livePipes = new Set<Pipe<any>>();
 
-    protected static globalTick = 0;
-    private static globalTickUpdated = false;
+    protected static globalBatch = 0;
+    private static globalBatchUpdated = false;
 
-    protected static updateGlobalTick() {
-        if (!Pipe.globalTickUpdated) {
-            Pipe.globalTick++;
-            Pipe.globalTickUpdated = true;
-            setTimeout(() => Pipe.globalTickUpdated = false);
+    protected static updateGlobalBatch() {
+        if (!Pipe.globalBatchUpdated) {
+            Pipe.globalBatch++;
+            Pipe.globalBatchUpdated = true;
+            setTimeout(() => Pipe.globalBatchUpdated = false);
         }
     }
 
@@ -64,7 +64,7 @@ export abstract class Pipe<T> {
 
     getTick() {
         this.updateIfNecessary();
-        return this.valueTick;
+        return this.localVersion;
     }
 
     subscribe(onValue: (value: T) => void) {
@@ -105,7 +105,10 @@ export abstract class Pipe<T> {
     private isUpdating: boolean = false;
 
     private values: Array<T> = [];
-    private valueTick = -1;
+    // The batch containing the current values. Values posted in one batch are accumulated.
+    private localBatch = -1;
+    // A pipe-local version. Unlike the batch, this changes for every update.
+    private localVersion = 0;
     private lastBroadcastTick = -1;
 
     private weakListeners = new Set<WeakRef<Pipe<any>>>();
@@ -120,15 +123,17 @@ export abstract class Pipe<T> {
 
         if (this.isDirty) {
             this.isUpdating = true;
-            const nextValueTick = this.updateTick();
+            const shouldUpdate = this.shouldUpdate();
 
-            // A changed tick indicates new values
-            if (nextValueTick != null && nextValueTick !== this.valueTick) {
+            // Dirty state means that a source ping was received. The update check
+            // determines whether that ping produces a value; the pipe's local version
+            // is incremented only after values have actually been recalculated.
+            if (shouldUpdate) {
                 const nextValues = this.updateValues();
 
                 if (nextValues !== null) {
                     this.values = nextValues;
-                    this.valueTick = nextValueTick;
+                    this.localVersion++;
                 }
             }
 
@@ -137,15 +142,15 @@ export abstract class Pipe<T> {
         }
     }
     /**
-     * Recalculates and returns the latest tick value for this pipe, or null if the tick value should not change.
+     * Determines whether this dirty pipe has new values to calculate.
      */
-    protected updateTick(): number | null {
-        return null;
+    protected shouldUpdate(): boolean {
+        return false;
     }
 
     /**
      * Recalculates and returns the latest values for this pipe, or null if the values should not change.
-     * If this is called, it is guaranteed that updateTick was previously called for the same cycle.
+     * If this is called, it is guaranteed that shouldUpdate was previously called for the same cycle.
      */
     protected updateValues(): Array<T> | null {
         return null;
@@ -223,7 +228,7 @@ export abstract class Pipe<T> {
     }
 
     protected listenTo(...sourcePipes: Array<Pipe<any>>) {
-        Pipe.updateGlobalTick();
+        Pipe.updateGlobalBatch();
 
         const ref = new WeakRef(this);
         sourcePipes.forEach(source => {
@@ -251,10 +256,11 @@ export abstract class Pipe<T> {
 
     protected postValues(values: Array<T>) {
         if (values.length > 0) {
-            Pipe.updateGlobalTick();
+            Pipe.updateGlobalBatch();
             this.values = values;
             this.isDirty = false;
-            this.valueTick = Pipe.globalTick;
+            this.localBatch = Pipe.globalBatch;
+            this.localVersion++;
             this.pingListeners();
         }
     }
@@ -262,15 +268,16 @@ export abstract class Pipe<T> {
     protected initValues(values: Array<T>) {
         if (values.length > 0) {
             this.values = values;
-            this.valueTick = 0;
+            this.localBatch = 0;
+            this.localVersion++;
             this.pingListeners();
         }
     }
 
     protected postSingleValue(value: T) {
-        Pipe.updateGlobalTick();
+        Pipe.updateGlobalBatch();
 
-        if (this.valueTick === Pipe.globalTick) {
+        if (this.localBatch === Pipe.globalBatch) {
             // Accumulate values that are posted in the same cycle.
             this.values = [...this.values, value];
         }
@@ -280,7 +287,8 @@ export abstract class Pipe<T> {
         }
 
         this.isDirty = false;
-        this.valueTick = Pipe.globalTick;
+        this.localBatch = Pipe.globalBatch;
+        this.localVersion++;
         this.pingListeners();
     }
 
@@ -568,13 +576,13 @@ export class FilterPipe<T> extends Pipe<T> {
         this.listenTo(source);
     }
 
-    protected updateTick(): number | null {
+    protected shouldUpdate(): boolean {
         const filteredValues = this.source.getAll().filter(val => this.predicate(val));
         if (filteredValues.length > 0) {
-            return this.source.getTick();
+            return true;
         }
         else {
-            return null;
+            return false;
         }
     }
 
@@ -593,8 +601,8 @@ export class MapPipe<TSource, TEnd> extends Pipe<TEnd> {
         this.listenTo(source);
     }
 
-    protected updateTick(): number | null {
-        return this.source.getTick();
+    protected shouldUpdate(): boolean {
+        return true;
     }
 
     protected updateValues(): Array<TEnd> {
@@ -619,22 +627,22 @@ export class CombinedPipe extends Pipe<Array<any>> {
         }
     }
 
-    protected updateTick(): number | null {
+    protected shouldUpdate(): boolean {
 
         if (!this.pipes.some((pipe, i) => pipe.getTick() > this.latestTicks[i])) {
             // No pipes have updated values
-            return null;
+            return false;
         }
 
         const latestValues = this.pipes.map(pipe => pipe.get());
         if (latestValues.some(val => val === undefined)) {
             // If any pipes have undefined values, do not emit anything.
-            return null;
+            return false;
         }
 
         this.latestTicks = this.pipes.map(pipe => pipe.getTick());
 
-        return Pipe.globalTick;
+        return true;
     }
 
     protected updateValues(): Array<Array<any>> {
@@ -673,16 +681,16 @@ export class CombinedPipeLabeled<TTemplate extends LabeledPipes> extends Pipe<Co
         }
     }
 
-    protected updateTick(): number | null {
+    protected shouldUpdate(): boolean {
         if (!Object.keys(this.template).some(key => this.template[key].getTick() > this.latestTicks[key])) {
             // No pipes have updated values
-            return null;
+            return false;
         }
 
         for (const key in this.template) {
             if (this.template[key].get() === undefined) {
                 // If any pipes have undefined values, do not emit anything.
-                return null;
+                return false;
             }
         }
 
@@ -691,7 +699,7 @@ export class CombinedPipeLabeled<TTemplate extends LabeledPipes> extends Pipe<Co
         }
 
         //return Object.values(this.template).reduce((max, pipe) => Math.max(max, pipe.getTick()), -1);
-        return Pipe.globalTick;
+        return true;
     }
 
     protected updateValues(): Array<CombinedLabeled<TTemplate>> | null {
@@ -723,8 +731,8 @@ export class MergedPipe extends Pipe<any> {
         this.lastTicks = pipes.map(_ => -1);
     }
 
-    protected updateTick(): number | null {
-        return this.pipes.reduce((max, pipe) => Math.max(max, pipe.getTick()), -1);
+    protected shouldUpdate(): boolean {
+        return true;
     }
 
     protected updateValues(): Array<any> {
@@ -749,8 +757,8 @@ export class EmptyPipe<T> extends Pipe<T> {
         super();
     }
 
-    protected updateTick(): number | null {
-        return -1;
+    protected shouldUpdate(): boolean {
+        return true;
     }
 
     protected updateValues(): Array<T> {
@@ -800,8 +808,8 @@ export class FallbackPipe<T> extends Pipe<T> {
         this.listenTo(source);
     }
 
-    protected updateTick(): number | null {
-        return Math.max(0, this.source.getTick());
+    protected shouldUpdate(): boolean {
+        return true;
     }
 
     protected updateValues(): Array<T> {
@@ -820,9 +828,9 @@ export class FallbackInnerPipe<T> extends Pipe<T> {
         this.listenTo(source, fallBackTo);
     }
 
-    protected updateTick(): number | null {
+    protected shouldUpdate(): boolean {
         const sourceVals = this.source.getAll();
-        return sourceVals.length === 0 ? this.fallBackTo.getTick() : this.source.getTick();
+        return true;
     }
 
     protected updateValues(): Array<T> {
@@ -844,7 +852,7 @@ export class FlatteningPipe<T> extends Pipe<T> {
         this.listenTo(source);
     }
 
-    protected updateTick(): number | null {
+    protected shouldUpdate(): boolean {
         if (this.source.getTick() > this.lastSourceTick) {
             this.resubscribe();
 
@@ -852,10 +860,10 @@ export class FlatteningPipe<T> extends Pipe<T> {
 
             // Swapping to an empty pipe should not update the flattened pipe's tick (no new value).
             // Swapping to a pipe with a stale value (e.g. fixed) should count as a new value for this pipe.
-            return nextValue == null ? null : Math.max(this.source.getTick(), this.currentPipe.getTick());
+            return nextValue != null;
         }
         else {
-            return this.currentPipe.getTick();
+            return true;
         }
     }
 
@@ -872,7 +880,7 @@ export class FlatteningPipe<T> extends Pipe<T> {
     }
 
     protected updateValues(): Array<T> {
-        // UpdateTick is guaranteed to have been called, so we don't need to worry about resubscribing.
+        // shouldUpdate is guaranteed to have been called, so we don't need to worry about resubscribing.
         return this.currentPipe.getAll();
     }
 }
@@ -890,7 +898,7 @@ export class FlatteningPipeConcurrent<T> extends Pipe<T> {
         this.listenTo(source);
     }
 
-    protected updateTick(): number | null {
+    protected shouldUpdate(): boolean {
         if (this.source.getTick() > this.lastSourceTick) {
             this.lastSourceTick = this.source.getTick();
 
@@ -901,11 +909,11 @@ export class FlatteningPipeConcurrent<T> extends Pipe<T> {
             });
         }
 
-        return [...this.allPipes.values(), this.source].reduce((max, pipe) => Math.max(max, pipe.getTick()), -1);
+        return true;
     }
 
     protected updateValues(): Array<T> {
-        // UpdateTick is guaranteed to have been called, so we don't need to worry about new pipes.
+        // shouldUpdate is guaranteed to have been called, so we don't need to worry about new pipes.
         const changedPipes = [...this.allPipes.values()].filter(pipe => pipe.getTick() > this.lastTicks.get(pipe)!);
         changedPipes.forEach(pipe => this.lastTicks.set(pipe, pipe.getTick()));
         return changedPipes.map(pipe => pipe.getAll()).flat();
@@ -925,7 +933,7 @@ export class ErrorCatchingPipe<T, TError> extends Pipe<T | TError> {
         this.listenTo(source);
     }
 
-    protected updateTick(): number | null {
+    protected shouldUpdate(): boolean {
         try {
             this.source.getAll(); // Just do it to see if the source is about to fire an error
             const sourceTick = this.source.getTick();
@@ -934,21 +942,21 @@ export class ErrorCatchingPipe<T, TError> extends Pipe<T | TError> {
                 this.lastError = undefined;
                 this.lastGoodTick = sourceTick;
 
-                return Pipe.globalTick;
+                return true;
             }
             else {
-                return null;
+                return false;
             }
         }
         catch (err: any) {
             if (this.lastError !== undefined) {
                 // TODO: Can we do any better than this? This could be a new error, but can we determine that?
                 // Consider caching/comparing the error message
-                return null;
+                return false;
             }
 
             this.lastError = err;
-            return Pipe.globalTick;
+            return true;
         }
     }
 
@@ -1043,8 +1051,8 @@ export class AccumulatingPipe<TIn, TState> extends Pipe<TState> {
         this.initValues([seed]);
     }
 
-    protected updateTick(): number | null {
-        return this.source.getTick();
+    protected shouldUpdate(): boolean {
+        return true;
     }
 
     protected updateValues(): Array<TState> | null {
@@ -1136,8 +1144,8 @@ export class GatingPipe<T> extends Pipe<T> {
         this.listenTo(gatingSignals);
     }
 
-    protected updateTick(): number | null {
-        return this.gatingSignals.getTick();
+    protected shouldUpdate(): boolean {
+        return true;
     }
 
     protected updateValues(): Array<T> {
@@ -1181,8 +1189,8 @@ export class ConditionAssertingPipe<T> extends Pipe<T> {
         this.sourceTrace = new Error("\n---Source Trace---").stack;
     }
 
-    protected updateTick(): number | null {
-        return this.source.getTick();
+    protected shouldUpdate(): boolean {
+        return true;
     }
 
     protected updateValues(): Array<T> | null {
@@ -1264,8 +1272,8 @@ export class PipeInput<T = null> extends Pipe<T> {
         this.state.set(null);
     }
 
-    protected updateTick(): number | null {
-        return [...this.delayedPipes.values(), this.state].reduce((max, pipe) => Math.max(max, pipe.getTick()), -1);
+    protected shouldUpdate(): boolean {
+        return true;
     }
 
     protected updateValues(): Array<T> {
@@ -1289,18 +1297,18 @@ export class UpdatingPipe<T> extends Pipe<T> {
         this.listenTo(source, updates);
     }
 
-    protected updateTick(): number | null {
+    protected shouldUpdate(): boolean {
         // A changed source always means a new value
         if (this.source.getTick() > this.lastSourceTick) {
-            return Pipe.globalTick;
+        return true;
         }
 
         // A new update may mean a new value, if the current value can be updated (i.e. is not undefined)
         if (this.updates.getTick() > this.lastUpdateTick && this.currentValue !== undefined) {
-            return Pipe.globalTick;
+            return true;
         }
 
-        return null;
+        return false;
     }
 
     protected updateValues(): Array<T> | null {

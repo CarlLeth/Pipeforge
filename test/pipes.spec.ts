@@ -225,6 +225,7 @@ describe('FlatteningPipe', () => {
 
         let result: number | string = 0;
         flat.subscribe(v => result = v);
+        expect(flat.get()).toBe(1);
 
         await vi.advanceTimersByTimeAsync(10);
         expect(result).toBe(1);
