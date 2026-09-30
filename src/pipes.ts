@@ -543,8 +543,8 @@ export abstract class Pipe<T> {
 
     static periodic(periodMs: number): Pipe<null> {
         return Pipe.producer(send => {
-            const handle = window.setInterval(() => send(null), periodMs);
-            return () => window.clearInterval(handle);
+            const handle = setInterval(() => send(null), periodMs);
+            return () => clearInterval(handle);
         });
     }
 
@@ -980,7 +980,7 @@ export class ErrorCatchingPipe<T, TError> extends Pipe<T | TError> {
 export class DebouncingPipe<T> extends Pipe<T> {
 
     private lastPingTime: number;
-    private timeoutHandle: number;
+    private timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     private isPending: boolean;
     private lastCollectedTick: number;
 
@@ -991,7 +991,7 @@ export class DebouncingPipe<T> extends Pipe<T> {
         super();
         this.listenTo(source);
         this.lastPingTime = 0;
-        this.timeoutHandle = 0;
+        this.timeoutHandle = undefined;
         this.isPending = false;
         this.lastCollectedTick = -1;
     }
@@ -1023,13 +1023,12 @@ export class DebouncingPipe<T> extends Pipe<T> {
                 return;
             }
 
-            if (this.timeoutHandle > 0) {
-                window.clearTimeout(this.timeoutHandle);
-                this.timeoutHandle = 0;
+            if (this.timeoutHandle !== undefined) {
+                clearTimeout(this.timeoutHandle);
+                this.timeoutHandle = undefined;
             }
 
-            // The TS compiler doesn't get the return type right without "window." here; confusing it with a different setTimeout method?
-            this.timeoutHandle = window.setTimeout(() => this.postValues([value]), this.debounceTimeMs);
+            this.timeoutHandle = setTimeout(() => this.postValues([value]), this.debounceTimeMs);
 
         }, 0);
     }

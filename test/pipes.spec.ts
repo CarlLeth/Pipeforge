@@ -13,49 +13,44 @@ describe('DelayingPipe', () => {
 
         vi.useFakeTimers();
 
-        try {
-            const input = Pipe.state<number>();
-            const delayed = input.delay(100);
+        const input = Pipe.state<number>();
+        const delayed = input.delay(100);
 
-            let result: number | undefined = undefined;
+        let result: number | undefined = undefined;
 
-            delayed.subscribe(val => result = val);
+        delayed.subscribe(val => result = val);
 
-            expect(input.get()).toBeUndefined();
-            expect(delayed.get()).toBeUndefined();
-            expect(result).toBeUndefined();
+        expect(input.get()).toBeUndefined();
+        expect(delayed.get()).toBeUndefined();
+        expect(result).toBeUndefined();
 
-            // Time 0
-            input.set(10);
-            expect(input.get()).toBe(10);
-            expect(delayed.get()).toBeUndefined();
-            expect(result).toBeUndefined();
+        // Time 0
+        input.set(10);
+        expect(input.get()).toBe(10);
+        expect(delayed.get()).toBeUndefined();
+        expect(result).toBeUndefined();
 
-            await vi.advanceTimersByTimeAsync(60);
+        await vi.advanceTimersByTimeAsync(60);
 
-            // Time 60
-            input.set(16);
-            expect(input.get()).toBe(16);
-            expect(delayed.get()).toBeUndefined();
-            expect(result).toBeUndefined();
+        // Time 60
+        input.set(16);
+        expect(input.get()).toBe(16);
+        expect(delayed.get()).toBeUndefined();
+        expect(result).toBeUndefined();
 
-            await vi.advanceTimersByTimeAsync(60);
+        await vi.advanceTimersByTimeAsync(60);
 
-            // Time 120
-            expect(input.get()).toBe(16);
-            expect(delayed.get()).toBe(10);
-            expect(result).toBe(10);
+        // Time 120
+        expect(input.get()).toBe(16);
+        expect(delayed.get()).toBe(10);
+        expect(result).toBe(10);
 
-            await vi.advanceTimersByTimeAsync(100);
+        await vi.advanceTimersByTimeAsync(100);
 
-            // Time 220
-            expect(input.get()).toBe(16);
-            expect(delayed.get()).toBe(16);
-            expect(result).toBe(16);
-        }
-        finally {
-            vi.useRealTimers();
-        }
+        // Time 220
+        expect(input.get()).toBe(16);
+        expect(delayed.get()).toBe(16);
+        expect(result).toBe(16);
     });
 });
 
@@ -69,7 +64,7 @@ describe('AccumulatingPipe', () => {
         const sum = state.fold((state, next) => state + next, 0);
 
         sum.subscribe(val => result = val);
-        
+
         expect(sum.get()).toBe(0);
 
         state.set(3);
@@ -255,5 +250,49 @@ describe('FlatteningPipe', () => {
         selector.set(letters as Pipe<number | string>);
         await vi.advanceTimersByTimeAsync(10);
         expect(result).toBe('b');
+    });
+});
+
+describe('DebouncingPipe', () => {
+    it('does not emit until the debounce interval has elapsed', async () => {
+        vi.useFakeTimers();
+
+        const input = Pipe.state<number>();
+        const debounced = input.debounce(100);
+        const results: number[] = [];
+
+        debounced.subscribe(value => results.push(value));
+
+        input.set(1);
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(results).toEqual([]);
+
+        await vi.advanceTimersByTimeAsync(99);
+        expect(results).toEqual([]);
+
+        await vi.advanceTimersByTimeAsync(10);
+        expect(results).toEqual([1]);
+    });
+
+    it('emits only the latest value when updates arrive during the debounce interval', async () => {
+        const input = Pipe.state<number>();
+        const debounced = input.debounce(100);
+        const results: number[] = [];
+
+        debounced.subscribe(value => results.push(value));
+
+        input.set(1);
+        await vi.advanceTimersByTimeAsync(0);
+        await vi.advanceTimersByTimeAsync(50);
+
+        input.set(2);
+        await vi.advanceTimersByTimeAsync(0);
+
+        await vi.advanceTimersByTimeAsync(99);
+        expect(results).toEqual([]);
+
+        await vi.advanceTimersByTimeAsync(10);
+        expect(results).toEqual([2]);
     });
 });
