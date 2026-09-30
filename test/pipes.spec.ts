@@ -96,7 +96,7 @@ describe('AccumulatingPipe', () => {
     });
 
     it('can accumulate values before any listeners are subscribed', async () => {
-        // We are trying to simplify reasoning about reactive programming by making their behavior
+        // We are trying to simplify reasoning about reactive streams by making their behavior
         // independent of whether they are subscribed to or not. Accumulating values comes with
         // common pitfalls in other reactive libraries, including different subscribers receiving different values
         // and values being dropped if nobody is subscribed. Pipeforge uses WeakRefs to maintain functionality
@@ -131,5 +131,52 @@ describe('AccumulatingPipe', () => {
         // Pipes are allowed a small, fixed number of cycles to propegate updates.
         await vi.advanceTimersByTimeAsync(1);
         expect(result).toBe(21);
+    });
+});
+
+describe('ProducerPipe', () => {
+    it('activates and disposes a producer function based on subscriptions', async () => {
+
+        vi.useFakeTimers();
+
+        let timeout: NodeJS.Timeout | undefined;
+
+        let ticks = 0;
+        let sum = 0;
+
+        const producer = Pipe.producer<number>(send => {
+            timeout = globalThis.setInterval(() => {
+                ticks++;
+                send(1);
+            }, 100);
+
+            return () => {
+                globalThis.clearInterval(timeout);
+            }
+        });
+
+        expect(timeout).toBeUndefined();
+        expect(ticks).toBe(0);
+
+        await vi.advanceTimersByTimeAsync(800);
+
+        expect(timeout).toBeUndefined();
+        expect(ticks).toBe(0);
+        expect(sum).toBe(0);
+
+        const unsub = producer.subscribe(val => sum += val);
+
+        await vi.advanceTimersByTimeAsync(310);
+
+        expect(ticks).toBe(3);
+        expect(sum).toBe(3);
+
+        unsub();
+
+        await vi.advanceTimersByTimeAsync(500);
+
+        expect(sum).toBe(3);
+        expect(ticks).toBe(3);
+
     });
 });

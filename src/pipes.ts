@@ -69,12 +69,15 @@ export abstract class Pipe<T> {
 
     subscribe(onValue: (value: T) => void) {
         this.subscribers.add(onValue);
+        this.checkForFirstListener();
 
         // Force this pipe to stay alive
         Pipe.livePipes.add(this);
 
         const unsubscribe = () => {
             this.subscribers.delete(onValue);
+            this.checkForLastListener();
+
             if (this.subscribers.size === 0) {
                 // Allow this pipe to be garbage collected
                 Pipe.livePipes.delete(this);
