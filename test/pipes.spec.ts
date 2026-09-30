@@ -432,3 +432,40 @@ describe('MapPipe', () => {
         expect(projection).toHaveBeenCalledTimes(3);
     });
 });
+
+describe('FilterPipe', () => {
+    it('emits values that satisfy the predicate and retains the last accepted value', async () => {
+        const source = Pipe.state<number>();
+        const filtered = source.filter(value => value % 2 === 0);
+        const results: number[] = [];
+
+        filtered.subscribe(value => results.push(value));
+        await vi.advanceTimersByTimeAsync(10);
+
+        source.set(2);
+        await vi.advanceTimersByTimeAsync(10);
+        expect(filtered.get()).toBe(2);
+        expect(results).toEqual([2]);
+
+        source.set(3);
+        await vi.advanceTimersByTimeAsync(10);
+        expect(filtered.get()).toBe(2);
+        expect(results).toEqual([2]);
+
+        source.set(4);
+        await vi.advanceTimersByTimeAsync(10);
+        expect(filtered.get()).toBe(4);
+        expect(results).toEqual([2, 4]);
+    });
+
+    it('filters every value in a synchronous batch', () => {
+        const source = Pipe.state<number>();
+        const filtered = source.filter(value => value > 1);
+
+        source.set(1);
+        source.set(2);
+        source.set(3);
+
+        expect(filtered.getAll()).toEqual([2, 3]);
+    });
+});
