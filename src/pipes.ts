@@ -711,6 +711,10 @@ export class MergedPipe extends Pipe<any> {
 
     protected updateValues(): Array<any> | null {
         const changedPipes = this.pipes.filter((pipe, i) => pipe.getVersion() > this.lastVersions[i]);
+        if (changedPipes.length === 0) {
+            return null;
+        }
+
         this.lastVersions = this.pipes.map(pipe => pipe.getVersion());
         const values = changedPipes.map(pipe => pipe.getAll()).flat();
         return values.length > 0 ? values : null;
@@ -932,7 +936,7 @@ export class ErrorCatchingPipe<T, TError> extends Pipe<T | TError> {
         }
         catch (error) {
             const replacement = this.onError(error);
-            return replacement === undefined ? null : [replacement];
+            return replacement === undefined ? null : [replacement as TError];
         }
     }
 }

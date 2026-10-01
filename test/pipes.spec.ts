@@ -538,4 +538,49 @@ describe('CombinedPipe', () => {
         expect(error).toBeNull();
     });
 });
+
+describe('MergedPipe', () => {
+    it('emits the latest value from whichever source changes', async () => {
+        const number = Pipe.state(1);
+        const letter = Pipe.state('a');
+        const merged = Pipe.merge(number, letter);
+
+        expect(merged.getAll()).toEqual([1, 'a']);
+
+        await vi.advanceTimersByTimeAsync(0);
+        number.set(2);
+        expect(merged.getAll()).toEqual([2]);
+
+        await vi.advanceTimersByTimeAsync(0);
+        letter.set('b');
+        expect(merged.getAll()).toEqual(['b']);
+    });
+
+    it('emits same-batch values in source order', () => {
+        const first = Pipe.state<number>();
+        const second = Pipe.state<number>();
+        const merged = Pipe.merge(first, second);
+
+        second.set(3);
+        first.set(1);
+        second.set(4);
+        first.set(2);
+
+        expect(merged.getAll()).toEqual([1, 2, 3, 4]);
+    });
+
+    it('does not advance for no-op input pings', () => {
+        const source = Pipe.state<number>();
+        const empty = source.filter(() => false);
+        const merged = Pipe.merge(empty);
+
+        expect(merged.getVersion()).toBe(0);
+
+        source.set(1);
+        merged.get();
+
+        expect(merged.getAll()).toEqual([]);
+        expect(merged.getVersion()).toBe(0);
+    });
+});
  
