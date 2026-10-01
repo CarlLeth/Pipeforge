@@ -108,7 +108,7 @@ export abstract class Pipe<T> {
     // The batch containing the current values. Values posted in one batch are accumulated.
     private localBatch = -1;
     // A pipe-local version. Unlike the batch, this changes for every update.
-    private localVersion = 0;
+    private localVersion = -1;
     private lastBroadcastTick = -1;
 
     private weakListeners = new Set<WeakRef<Pipe<any>>>();
@@ -159,7 +159,7 @@ export abstract class Pipe<T> {
     }
 
     private checkForFirstListener() {
-        if (!this.isOn && (this.weakListeners.size + this.subscribers.size) >= 0) {
+        if (!this.isOn && (this.weakListeners.size + this.subscribers.size) > 0) {
             this.isOn = true;
             this.firstListenerAdded();
         }
@@ -750,28 +750,26 @@ export class DelayingPipe<T> extends Pipe<T> {
     }
 
     protected onPing() {
-
-        let lastValues: Array<T>;
-
-        // Wait until the "ping" phase is complete before caching the value
         setTimeout(() => {
-            if (this.source.getVersion() > this.lastSourceVersion) {
-                this.lastSourceVersion = this.source.getVersion();
-                lastValues = this.source.getAll();
+            const sourceVersion = this.source.getVersion();
+
+            if (sourceVersion <= this.lastSourceVersion) {
+                return;
             }
+
+            this.lastSourceVersion = sourceVersion;
+            const values = this.source.getAll();
+
+            setTimeout(() => {
+                this.postValues(values);
+            }, this.delayMilliseconds);
         }, 0);
-
-        setTimeout(() => {
-            if (lastValues != null) {
-                this.postValues(lastValues);
-            }
-        }, this.delayMilliseconds);
     }
 }
 
 export class FallbackPipe<T> extends Pipe<T> {
 
-    private lastSourceVersion = -1;
+    private lastSourceVersion = -2;
 
     constructor(
         public readonly source: Pipe<T>,

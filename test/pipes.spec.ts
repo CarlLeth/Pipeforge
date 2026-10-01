@@ -207,6 +207,75 @@ describe('State', () => {
     });
 });
 
+describe('PipeInput', () => {
+    it('forwards values set directly on the input', () => {
+        const input = Pipe.input<number>();
+
+        expect(input.get()).toBeUndefined();
+
+        input.set(3);
+
+        expect(input.get()).toBe(3);
+    });
+
+    it('forwards values from added pipes and stops forwarding removed pipes', async () => {
+        const input = Pipe.input<number>();
+        const source = Pipe.state<number>();
+
+        input.add(source);
+        expect(input.has(source)).toBe(true);
+        expect(input.members).toEqual([source]);
+
+        source.set(4);
+        await vi.advanceTimersByTimeAsync(10);
+        expect(input.get()).toBe(4);
+
+        input.remove(source);
+        expect(input.has(source)).toBe(false);
+        expect(input.members).toEqual([]);
+
+        source.set(9);
+        await vi.advanceTimersByTimeAsync(10);
+        expect(input.get()).toBe(4);
+    });
+
+    it('handles well-behaved cycles', async () => {
+
+        // Create a "safe" cycle of streams that are mutating shared state.
+        // Although a State might be a better choice for this simplified example, more complex situations
+        // can be handled well by treating multiple streams as each acting on shared state.
+
+        const input = Pipe.input<number>();
+        const doubleAction = Pipe.action();
+        const sub1Action = Pipe.action();
+
+        input.add(input.map(x => x * 2).gatedBy(doubleAction));
+        input.add(input.map(x => x - 1).gatedBy(sub1Action));
+
+        const results = traceOutputs(input);
+
+        input.set(1);
+        await vi.advanceTimersByTimeAsync(10);
+
+        expect(results).toEqual([1]);
+
+        doubleAction.call();
+        await vi.advanceTimersByTimeAsync(10);
+        expect(results).toEqual([1, 2]);
+
+        doubleAction.call();
+        await vi.advanceTimersByTimeAsync(10);
+        expect(results).toEqual([1, 2, 4]);
+
+        sub1Action.call();
+        await vi.advanceTimersByTimeAsync(10);
+        expect(results).toEqual([1, 2, 4, 3]);
+
+        await vi.advanceTimersByTimeAsync(100);
+        expect(results).toEqual([1, 2, 4, 3]);
+    });
+});
+
 describe('FlatteningPipe', () => {
     it('emits changes when either its source pipe emits a new pipe or when the last emitted pipe emits a new value', async () => {
         const numbers = Pipe.state(1);
@@ -347,27 +416,25 @@ describe('GatingPipe', () => {
 
         gated.subscribe(value => results.push(value));
         await vi.advanceTimersByTimeAsync(10);
-        expect(results).toEqual([10]);
+        expect(results).toEqual([]);
 
         values.set(20);
         await vi.advanceTimersByTimeAsync(10);
-        expect(results).toEqual([10]);
-        expect(gated.get()).toBe(10);
+        expect(results).toEqual([]);
 
         gate.call();
         await vi.advanceTimersByTimeAsync(10);
-        expect(results).toEqual([10, 20]);
-        expect(gated.get()).toBe(20);
+        expect(results).toEqual([20]);
 
         // Emits again if the gate is called again.
         gate.call();
         await vi.advanceTimersByTimeAsync(10);
-        expect(results).toEqual([10, 20, 20]);
+        expect(results).toEqual([20, 20]);
         expect(gated.get()).toBe(20);
     });
 
-    it('uses the most recent source value when multiple updates occur before a signal', async () => {
-        const values = Pipe.state('initial');
+    it('does not emit anything before a first signal', async () => {
+        const values = Pipe.state('first');
         const gate = Pipe.action();
         const gated = values.gatedBy(gate);
         const results: string[] = [];
@@ -375,14 +442,14 @@ describe('GatingPipe', () => {
         gated.subscribe(value => results.push(value));
         await vi.advanceTimersByTimeAsync(10);
 
-        values.set('first');
-        values.set('latest');
+        values.set('second');
+        values.set('third');
         await vi.advanceTimersByTimeAsync(10);
-        expect(results).toEqual(['initial']);
+        expect(results).toEqual([]);
         
         gate.call();
         await vi.advanceTimersByTimeAsync(10);
-        expect(results).toEqual(['initial', 'latest']);
+        expect(results).toEqual(['third']);
     });
 });
 
@@ -574,13 +641,20 @@ describe('MergedPipe', () => {
         const empty = source.filter(() => false);
         const merged = Pipe.merge(empty);
 
-        expect(merged.getVersion()).toBe(0);
+        expect(merged.getVersion()).toBe(-1);
 
         source.set(1);
         merged.get();
 
         expect(merged.getAll()).toEqual([]);
-        expect(merged.getVersion()).toBe(0);
+        expect(merged.getVersion()).toBe(-1);
     });
 });
- 
+
+// Returns an array that is updated with all outputs from the stream
+// This is only for testing and not meant to be a good example of how to use this library.
+function traceOutputs<T>(pipe: Pipe<T>) {
+    const outputs: Array<T> = [];
+    pipe.subscribe(val => outputs.push(val));
+    return outputs;
+}
