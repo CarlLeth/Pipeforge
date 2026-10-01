@@ -62,7 +62,7 @@ export abstract class Pipe<T> {
         return this.values;
     }
 
-    getTick() {
+    getVersion() {
         this.updateIfNecessary();
         return this.localVersion;
     }
@@ -124,18 +124,14 @@ export abstract class Pipe<T> {
         if (this.isDirty) {
             this.isUpdating = true;
             try {
-                const shouldUpdate = this.shouldUpdate();
+                // A dirty state means that a source ping was received. The update
+                // calculation determines whether that ping results in new values
+                // being emitted from this pipe.
+                const nextValues = this.updateValues();
 
-                // Dirty state means that a source ping was received. The update check
-                // determines whether that ping produces a value; the pipe's local version
-                // is incremented only after values have actually been recalculated.
-                if (shouldUpdate) {
-                    const nextValues = this.updateValues();
-
-                    if (nextValues !== null) {
-                        this.values = nextValues;
-                        this.localVersion++;
-                    }
+                if (nextValues !== null) {
+                    this.values = nextValues;
+                    this.localVersion++;
                 }
             }
             finally {
@@ -145,15 +141,7 @@ export abstract class Pipe<T> {
         }
     }
     /**
-     * Determines whether this dirty pipe has new values to calculate.
-     */
-    protected shouldUpdate(): boolean {
-        return false;
-    }
-
-    /**
      * Recalculates and returns the latest values for this pipe, or null if the values should not change.
-     * If this is called, it is guaranteed that shouldUpdate was previously called for the same cycle.
      */
     protected updateValues(): Array<T> | null {
         return null;
@@ -218,11 +206,11 @@ export abstract class Pipe<T> {
     }
 
     protected broadcastValue() {
-        if (this.getTick() <= this.lastBroadcastTick) {
+        if (this.getVersion() <= this.lastBroadcastTick) {
             return;
         }
 
-        this.lastBroadcastTick = this.getTick();
+        this.lastBroadcastTick = this.getVersion();
 
         const nextValue = this.get();
         if (nextValue !== undefined) {
@@ -571,6 +559,8 @@ export abstract class Pipe<T> {
 
 export class FilterPipe<T> extends Pipe<T> {
 
+    private lastSourceVersion = -1;
+
     constructor(
         public readonly source: Pipe<T>,
         public readonly predicate: (value: T) => boolean
@@ -579,22 +569,24 @@ export class FilterPipe<T> extends Pipe<T> {
         this.listenTo(source);
     }
 
-    protected shouldUpdate(): boolean {
-        const filteredValues = this.source.getAll().filter(val => this.predicate(val));
-        if (filteredValues.length > 0) {
-            return true;
-        }
-        else {
-            return false;
-        }
-    }
+    protected updateValues(): Array<T> | null {
 
-    protected updateValues(): Array<T> {
-        return this.source.getAll().filter(val => this.predicate(val));
+        const sourceVersion = this.source.getVersion();
+
+        if (sourceVersion <= this.lastSourceVersion) {
+            return null;
+        }
+
+        const values = this.source.getAll().filter(val => this.predicate(val));
+        this.lastSourceVersion = sourceVersion;
+
+        return values.length > 0 ? values : null;
     }
 }
 
 export class MapPipe<TSource, TEnd> extends Pipe<TEnd> {
+
+    private lastSourceVersion = -1;
 
     constructor(
         public readonly source: Pipe<TSource>,
@@ -604,24 +596,32 @@ export class MapPipe<TSource, TEnd> extends Pipe<TEnd> {
         this.listenTo(source);
     }
 
-    protected shouldUpdate(): boolean {
-        return true;
-    }
+    protected updateValues(): Array<TEnd> | null {
+        const sourceTick = this.source.getVersion();
 
-    protected updateValues(): Array<TEnd> {
-        return <Array<TEnd>>this.source.getAll().map(val => this.projection(val)).filter(val => val !== undefined);
+        if (sourceTick <= this.lastSourceVersion) {
+            return null;
+        }
+
+        const values = this.source.getAll()
+            .map(val => this.projection(val))
+            .filter(val => val !== undefined) as Array<TEnd>;
+
+        this.lastSourceVersion = sourceTick;
+
+        return values.length > 0 ? values : null;
     }
 }
 
 export class CombinedPipe extends Pipe<Array<any>> {
 
-    private latestTicks: Array<number>;
+    private latestVersions: Array<number>;
 
     constructor(
         public readonly pipes: Array<Pipe<any>>
     ) {
         super();
-        this.latestTicks = pipes.map(_ => -1);
+        this.latestVersions = pipes.map(_ => -1);
         this.listenTo(...pipes);
 
         if (pipes.length === 0) {
@@ -630,50 +630,40 @@ export class CombinedPipe extends Pipe<Array<any>> {
         }
     }
 
-    protected shouldUpdate(): boolean {
+    protected updateValues(): Array<Array<any>> | null {
 
-        if (!this.pipes.some((pipe, i) => pipe.getTick() > this.latestTicks[i])) {
+        if (!this.pipes.some((pipe, i) => pipe.getVersion() > this.latestVersions[i])) {
             // No pipes have updated values
-            return false;
+            return null;
         }
 
         const latestValues = this.pipes.map(pipe => pipe.get());
         if (latestValues.some(val => val === undefined)) {
             // If any pipes have undefined values, do not emit anything.
-            return false;
+            return null;
         }
 
-        this.latestTicks = this.pipes.map(pipe => pipe.getTick());
+        this.latestVersions = this.pipes.map(pipe => pipe.getVersion());
 
-        return true;
+        return [latestValues];
     }
 
-    protected updateValues(): Array<Array<any>> {
-        const latestValues = this.pipes.map(pipe => pipe.get());
-
-        if (latestValues.some(val => val === undefined)) {
-            return [];
-        }
-        else {
-            return [latestValues];
-        }
-    }
 }
 
 export class CombinedPipeLabeled<TTemplate extends LabeledPipes> extends Pipe<CombinedLabeled<TTemplate>> {
 
-    private latestTicks: Record<string, number>;
+    private latestVersions: Record<string, number>;
 
     constructor(
         public readonly template: TTemplate
     ) {
         super();
-        this.latestTicks = {};
+        this.latestVersions = {};
 
         let anyKeys = false;
         for (const key in template) {
             anyKeys = true;
-            this.latestTicks[key] = -1;
+            this.latestVersions[key] = -1;
         }
 
         this.listenTo(...Object.values(template));
@@ -684,38 +674,23 @@ export class CombinedPipeLabeled<TTemplate extends LabeledPipes> extends Pipe<Co
         }
     }
 
-    protected shouldUpdate(): boolean {
-        if (!Object.keys(this.template).some(key => this.template[key].getTick() > this.latestTicks[key])) {
+    protected updateValues(): Array<CombinedLabeled<TTemplate>> | null {
+        if (!Object.keys(this.template).some(key => this.template[key].getVersion() > this.latestVersions[key])) {
             // No pipes have updated values
-            return false;
+            return null;
         }
 
         for (const key in this.template) {
             if (this.template[key].get() === undefined) {
                 // If any pipes have undefined values, do not emit anything.
-                return false;
-            }
-        }
-
-        for (const key in this.template) {
-            this.latestTicks[key] = this.template[key].getTick();
-        }
-
-        //return Object.values(this.template).reduce((max, pipe) => Math.max(max, pipe.getTick()), -1);
-        return true;
-    }
-
-    protected updateValues(): Array<CombinedLabeled<TTemplate>> | null {
-        const result: { [key: string]: any } = {};
-
-        for (const key in this.template) {
-            const childValue = this.template[key].get();
-
-            if (childValue === undefined) {
                 return null;
             }
+        }
 
-            result[key] = childValue;
+        const result: { [key: string]: any } = {};
+        for (const key in this.template) {
+            this.latestVersions[key] = this.template[key].getVersion();
+            result[key] = this.template[key].get();
         }
 
         return [<CombinedLabeled<TTemplate>>result];
@@ -724,24 +699,21 @@ export class CombinedPipeLabeled<TTemplate extends LabeledPipes> extends Pipe<Co
 
 export class MergedPipe extends Pipe<any> {
 
-    private lastTicks: Array<number>;
+    private lastVersions: Array<number>;
 
     constructor(
         public readonly pipes: Array<Pipe<any>>
     ) {
         super();
         this.listenTo(...pipes);
-        this.lastTicks = pipes.map(_ => -1);
+        this.lastVersions = pipes.map(_ => -1);
     }
 
-    protected shouldUpdate(): boolean {
-        return true;
-    }
-
-    protected updateValues(): Array<any> {
-        const changedPipes = this.pipes.filter((pipe, i) => pipe.getTick() > this.lastTicks[i]);
-        this.lastTicks = this.pipes.map(pipe => pipe.getTick());
-        return changedPipes.map(pipe => pipe.getAll()).flat();
+    protected updateValues(): Array<any> | null {
+        const changedPipes = this.pipes.filter((pipe, i) => pipe.getVersion() > this.lastVersions[i]);
+        this.lastVersions = this.pipes.map(pipe => pipe.getVersion());
+        const values = changedPipes.map(pipe => pipe.getAll()).flat();
+        return values.length > 0 ? values : null;
     }
 }
 
@@ -759,19 +731,11 @@ export class EmptyPipe<T> extends Pipe<T> {
     constructor() {
         super();
     }
-
-    protected shouldUpdate(): boolean {
-        return true;
-    }
-
-    protected updateValues(): Array<T> {
-        return [];
-    }
 }
 
 export class DelayingPipe<T> extends Pipe<T> {
 
-    private lastSourceTick = -1;
+    private lastSourceVersion = -1;
 
     constructor(
         public readonly source: Pipe<T>,
@@ -787,8 +751,8 @@ export class DelayingPipe<T> extends Pipe<T> {
 
         // Wait until the "ping" phase is complete before caching the value
         setTimeout(() => {
-            if (this.source.getTick() > this.lastSourceTick) {
-                this.lastSourceTick = this.source.getTick();
+            if (this.source.getVersion() > this.lastSourceVersion) {
+                this.lastSourceVersion = this.source.getVersion();
                 lastValues = this.source.getAll();
             }
         }, 0);
@@ -803,6 +767,8 @@ export class DelayingPipe<T> extends Pipe<T> {
 
 export class FallbackPipe<T> extends Pipe<T> {
 
+    private lastSourceVersion = -1;
+
     constructor(
         public readonly source: Pipe<T>,
         public readonly getFallbackValue: () => T
@@ -811,17 +777,21 @@ export class FallbackPipe<T> extends Pipe<T> {
         this.listenTo(source);
     }
 
-    protected shouldUpdate(): boolean {
-        return true;
-    }
+    protected updateValues(): Array<T> | null {
+        if (this.source.getVersion() <= this.lastSourceVersion) {
+            return null;
+        }
 
-    protected updateValues(): Array<T> {
+        this.lastSourceVersion = this.source.getVersion();
         const sourceVals = this.source.getAll();
         return sourceVals.length === 0 ? [this.getFallbackValue()] : sourceVals;
     }
 }
 
 export class FallbackInnerPipe<T> extends Pipe<T> {
+
+    private lastSourceVersion = -1;
+    private lastFallbackVersion = -1;
 
     constructor(
         public readonly source: Pipe<T>,
@@ -831,21 +801,32 @@ export class FallbackInnerPipe<T> extends Pipe<T> {
         this.listenTo(source, fallBackTo);
     }
 
-    protected shouldUpdate(): boolean {
-        const sourceVals = this.source.getAll();
-        return true;
-    }
+    protected updateValues(): Array<T> | null {
+        const sourceChanged = this.source.getVersion() > this.lastSourceVersion;
+        const fallbackChanged = this.fallBackTo.getVersion() > this.lastFallbackVersion;
 
-    protected updateValues(): Array<T> {
+        if (!sourceChanged && !fallbackChanged) {
+            return null;
+        }
+
+        this.lastSourceVersion = this.source.getVersion();
+        this.lastFallbackVersion = this.fallBackTo.getVersion();
+
         const sourceVals = this.source.getAll();
-        return sourceVals.length === 0 ? this.fallBackTo.getAll() : sourceVals;
+        const selectedValues = sourceVals.length === 0 ? this.fallBackTo.getAll() : sourceVals;
+        if (selectedValues.length === 0) {
+            return null;
+        }
+
+        return selectedValues;
     }
 }
 
 export class FlatteningPipe<T> extends Pipe<T> {
 
     private currentPipe: Pipe<T>;
-    private lastSourceTick: number = -1;
+    private lastSourceVersion: number = -1;
+    private lastCurrentVersion: number = -1;
 
     constructor(
         public readonly source: Pipe<Pipe<T>>
@@ -855,44 +836,42 @@ export class FlatteningPipe<T> extends Pipe<T> {
         this.listenTo(source);
     }
 
-    protected shouldUpdate(): boolean {
-        if (this.source.getTick() > this.lastSourceTick) {
+    protected updateValues(): Array<T> | null {
+        const sourceChanged = this.source.getVersion() > this.lastSourceVersion;
+        if (sourceChanged) {
             this.resubscribe();
-
-            const nextValue = this.currentPipe.get();
-
-            // Swapping to an empty pipe should not update the flattened pipe's tick (no new value).
-            // Swapping to a pipe with a stale value (e.g. fixed) should count as a new value for this pipe.
-            return nextValue != null;
         }
-        else {
-            return true;
+
+        const currentValues = this.currentPipe.getAll();
+        if (currentValues.length === 0) {
+            return null;
         }
+
+        if (!sourceChanged && this.currentPipe.getVersion() <= this.lastCurrentVersion) {
+            return null;
+        }
+
+        this.lastCurrentVersion = this.currentPipe.getVersion();
+        return currentValues;
     }
 
     private resubscribe() {
         const nextPipe = this.source.get() ?? Pipe.empty<T>();
 
-        //if (this.lastPipe != null) {
         this.unlisten(this.currentPipe);
-        //}
 
         this.listenTo(nextPipe);
         this.currentPipe = nextPipe;
-        this.lastSourceTick = this.source.getTick();
+        this.lastSourceVersion = this.source.getVersion();
     }
 
-    protected updateValues(): Array<T> {
-        // shouldUpdate is guaranteed to have been called, so we don't need to worry about resubscribing.
-        return this.currentPipe.getAll();
-    }
 }
 
 export class FlatteningPipeConcurrent<T> extends Pipe<T> {
 
-    private lastSourceTick: number = -1;
+    private lastSourceVersion: number = -1;
     private allPipes = new Set<Pipe<T>>();
-    private lastTicks = new Map<Pipe<T>, number>();
+    private lastVersions = new Map<Pipe<T>, number>();
 
     constructor(
         public readonly source: Pipe<Pipe<T>>
@@ -901,32 +880,34 @@ export class FlatteningPipeConcurrent<T> extends Pipe<T> {
         this.listenTo(source);
     }
 
-    protected shouldUpdate(): boolean {
-        if (this.source.getTick() > this.lastSourceTick) {
-            this.lastSourceTick = this.source.getTick();
+    protected updateValues(): Array<T> | null {
+        if (this.source.getVersion() > this.lastSourceVersion) {
+            this.lastSourceVersion = this.source.getVersion();
 
             this.source.getAll().forEach(pipe => {
-                this.allPipes.add(pipe);
-                this.lastTicks.set(pipe, -1);
-                this.listenTo(pipe);
+                if (!this.allPipes.has(pipe)) {
+                    this.allPipes.add(pipe);
+                    this.lastVersions.set(pipe, -1);
+                    this.listenTo(pipe);
+                }
             });
         }
 
-        return true;
-    }
+        const changedPipes = [...this.allPipes].filter(pipe =>
+            pipe.getVersion() > this.lastVersions.get(pipe)! && pipe.getAll().length > 0
+        );
 
-    protected updateValues(): Array<T> {
-        // shouldUpdate is guaranteed to have been called, so we don't need to worry about new pipes.
-        const changedPipes = [...this.allPipes.values()].filter(pipe => pipe.getTick() > this.lastTicks.get(pipe)!);
-        changedPipes.forEach(pipe => this.lastTicks.set(pipe, pipe.getTick()));
-        return changedPipes.map(pipe => pipe.getAll()).flat();
+        const allChangedPipes = [...this.allPipes].filter(pipe => pipe.getVersion() > this.lastVersions.get(pipe)!);
+        allChangedPipes.forEach(pipe => this.lastVersions.set(pipe, pipe.getVersion()));
+
+        const values = changedPipes.map(pipe => pipe.getAll()).flat();
+        return values.length > 0 ? values : null;
     }
 }
 
 export class ErrorCatchingPipe<T, TError> extends Pipe<T | TError> {
 
-    private lastGoodTick = -1;
-    private lastError: TError | undefined;
+    private lastGoodVersion = -1;
 
     constructor(
         public readonly source: Pipe<T>,
@@ -936,56 +917,31 @@ export class ErrorCatchingPipe<T, TError> extends Pipe<T | TError> {
         this.listenTo(source);
     }
 
-    protected shouldUpdate(): boolean {
+    protected updateValues(): Array<T | TError> | null {
         try {
-            this.source.getAll(); // Just do it to see if the source is about to fire an error
-            const sourceTick = this.source.getTick();
+            // This must happen before checking the version: source evaluation may throw.
+            const values = this.source.getAll();
+            const sourceVersion = this.source.getVersion();
 
-            if (this.lastError !== undefined || sourceTick > this.lastGoodTick) {
-                this.lastError = undefined;
-                this.lastGoodTick = sourceTick;
+            if (sourceVersion <= this.lastGoodVersion) {
+                return null;
+            }
 
-                return true;
-            }
-            else {
-                return false;
-            }
+            this.lastGoodVersion = sourceVersion;
+            return values.length > 0 ? values : null;
         }
-        catch (err: any) {
-            if (this.lastError !== undefined) {
-                // TODO: Can we do any better than this? This could be a new error, but can we determine that?
-                // Consider caching/comparing the error message
-                return false;
-            }
-
-            this.lastError = err;
-            return true;
-        }
-    }
-
-    protected updateValues(): Array<T | TError> {
-
-        if (this.lastError !== undefined) {
-            const replacement = this.onError(this.lastError);
-            if (replacement === undefined) {
-                return [];
-            }
-            else {
-                return [<TError>replacement];
-            }
-        }
-        else {
-            return this.source.getAll();
+        catch (error) {
+            const replacement = this.onError(error);
+            return replacement === undefined ? null : [replacement];
         }
     }
 }
 
 export class DebouncingPipe<T> extends Pipe<T> {
 
-    private lastPingTime: number;
     private timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     private isPending: boolean;
-    private lastCollectedTick: number;
+    private lastCollectedVersion: number;
 
     constructor(
         public readonly source: Pipe<T>,
@@ -993,10 +949,9 @@ export class DebouncingPipe<T> extends Pipe<T> {
     ) {
         super();
         this.listenTo(source);
-        this.lastPingTime = 0;
         this.timeoutHandle = undefined;
         this.isPending = false;
-        this.lastCollectedTick = -1;
+        this.lastCollectedVersion = -1;
     }
 
     protected onPing() {
@@ -1004,20 +959,19 @@ export class DebouncingPipe<T> extends Pipe<T> {
             return;
         }
 
-        this.lastPingTime = Date.now();
         this.isPending = true;
 
         setTimeout(() => {
 
             this.isPending = false;
 
-            const sourceTick = this.source.getTick();
-            if (sourceTick <= this.lastCollectedTick) {
+            const sourceVersion = this.source.getVersion();
+            if (sourceVersion <= this.lastCollectedVersion) {
                 // We've already buffered these values. TODO: Does this line ever actually run? Why?
                 return;
             }
 
-            this.lastCollectedTick = sourceTick;
+            this.lastCollectedVersion = sourceVersion;
 
             const value = this.source.get();
 
@@ -1040,6 +994,9 @@ export class DebouncingPipe<T> extends Pipe<T> {
 export class AccumulatingPipe<TIn, TState> extends Pipe<TState> {
 
     private lastSourceTick = -1;
+    private lastSourceBatch = -1;
+    private batchProcessedValues = 0;
+
     private lastValue: TState;
 
     constructor(
@@ -1053,18 +1010,27 @@ export class AccumulatingPipe<TIn, TState> extends Pipe<TState> {
         this.initValues([seed]);
     }
 
-    protected shouldUpdate(): boolean {
-        return true;
-    }
-
     protected updateValues(): Array<TState> | null {
-        if (this.source.getTick() > this.lastSourceTick) {
-            this.lastSourceTick = this.source.getTick();
-            const newValues = this.source.getAll();
+        if (this.source.getVersion() > this.lastSourceTick) {
+
+            if (Pipe.globalBatch > this.lastSourceBatch) {
+                this.batchProcessedValues = 0;
+            }
+
+            this.lastSourceTick = this.source.getVersion();
+            this.lastSourceBatch = Pipe.globalBatch;
+
+            let newValues = this.source.getAll();
+
+            if (this.batchProcessedValues > 0) {
+                newValues = newValues.slice(this.batchProcessedValues);
+            }
 
             if (newValues.length === 0) {
                 return null;
             }
+
+            this.batchProcessedValues += newValues.length;
 
             this.lastValue = newValues.reduce(this.accumulate, this.lastValue)
             return [this.lastValue];
@@ -1132,11 +1098,12 @@ export class Action<T = null> extends Pipe<T> {
     ) {
         super();
         this.call = <any>((val: any) => this.postSingleValue(val === undefined ? null : val));
-
     }
 }
 
 export class GatingPipe<T> extends Pipe<T> {
+
+    private lastGatingVersion = -1;
 
     constructor(
         public readonly gatingValues: Pipe<T>,
@@ -1146,11 +1113,16 @@ export class GatingPipe<T> extends Pipe<T> {
         this.listenTo(gatingSignals);
     }
 
-    protected shouldUpdate(): boolean {
-        return true;
-    }
+    protected updateValues(): Array<T> | null {
+        if (this.gatingSignals.getVersion() <= this.lastGatingVersion) {
+            return null;
+        }
 
-    protected updateValues(): Array<T> {
+        if (this.gatingValues.getAll().length === 0) {
+            return null;
+        }
+
+        this.lastGatingVersion = this.gatingSignals.getVersion();
         return this.gatingValues.getAll();
     }
 }
@@ -1177,6 +1149,7 @@ export class ProducerPipe<T> extends Pipe<T> {
 
 export class ConditionAssertingPipe<T> extends Pipe<T> {
 
+    private lastSourceVersion = -1;
     private getFailureMessage: ((failedValue: T) => string);
     private sourceTrace: string | undefined;
 
@@ -1191,16 +1164,18 @@ export class ConditionAssertingPipe<T> extends Pipe<T> {
         this.sourceTrace = new Error("\n---Source Trace---").stack;
     }
 
-    protected shouldUpdate(): boolean {
-        return true;
-    }
-
     protected updateValues(): Array<T> | null {
+        if (this.source.getVersion() <= this.lastSourceVersion) {
+            return null;
+        }
+
         const values = this.source.getAll();
 
         if (values.length === 0) {
-            return values;
+            return null;
         }
+
+        this.lastSourceVersion = this.source.getVersion();
 
         const failingValue = values.find(val => !this.assertion(val));
         if (failingValue === undefined) {
@@ -1219,13 +1194,13 @@ export class PipeInput<T = null> extends Pipe<T> {
 
     private readonly pipes = new Set<Pipe<T>>();
     private readonly delayedPipes = new Map<Pipe<T>, Pipe<T>>();
-    private readonly lastTicks = new Map<Pipe<T>, number>();
+    private readonly lastVersions = new Map<Pipe<T>, number>();
     private readonly state: State<T>;
 
     constructor(initialValue?: T) {
         super();
         this.state = State.new(initialValue);
-        this.lastTicks.set(this.state, -1);
+        this.lastVersions.set(this.state, -1);
         this.listenTo(this.state);
     }
 
@@ -1236,7 +1211,7 @@ export class PipeInput<T = null> extends Pipe<T> {
             // PipeInput.add has the possibility of creating cycles.
             // Most real-world cycles can be resolved by introducing a 0-ms delay on the added pipe.
             const delayed = pipe.delay(0);
-            this.lastTicks.set(delayed, -1);
+            this.lastVersions.set(delayed, -1);
             this.listenTo(delayed);
 
             this.delayedPipes.set(pipe, delayed);
@@ -1250,7 +1225,7 @@ export class PipeInput<T = null> extends Pipe<T> {
             const delayed = this.delayedPipes.get(pipe);
 
             if (delayed !== undefined) {
-                this.lastTicks.delete(delayed);
+                this.lastVersions.delete(delayed);
                 this.unlisten(delayed);
             }
 
@@ -1274,22 +1249,22 @@ export class PipeInput<T = null> extends Pipe<T> {
         this.state.set(null);
     }
 
-    protected shouldUpdate(): boolean {
-        return true;
-    }
+    protected updateValues(): Array<T> | null {
+        const changedPipes = [...this.delayedPipes.values(), this.state]
+            .filter(pipe => pipe.getVersion() > this.lastVersions.get(pipe)!);
 
-    protected updateValues(): Array<T> {
-        const changedPipes = [...this.delayedPipes.values(), this.state].filter(pipe => pipe.getTick() > this.lastTicks.get(pipe)!);
-        changedPipes.forEach(pipe => this.lastTicks.set(pipe, pipe.getTick()));
-        return changedPipes.flatMap(o => o.getAll());
+        changedPipes.forEach(pipe => this.lastVersions.set(pipe, pipe.getVersion()));
+
+        const values = changedPipes.flatMap(o => o.getAll());
+        return values.length > 0 ? values : null;
     }
 }
 
 export class UpdatingPipe<T> extends Pipe<T> {
 
-    private lastSourceTick = -1;
-    private lastUpdateTick = -1;
-    private currentValue: T | undefined = undefined;
+    private lastSourceVersion = -1;
+    private lastUpdateVersion = -1;
+    //private currentValue: T | undefined = undefined;
 
     constructor(
         public readonly source: Pipe<T>,
@@ -1299,40 +1274,29 @@ export class UpdatingPipe<T> extends Pipe<T> {
         this.listenTo(source, updates);
     }
 
-    protected shouldUpdate(): boolean {
-        // A changed source always means a new value
-        if (this.source.getTick() > this.lastSourceTick) {
-        return true;
-        }
-
-        // A new update may mean a new value, if the current value can be updated (i.e. is not undefined)
-        if (this.updates.getTick() > this.lastUpdateTick && this.currentValue !== undefined) {
-            return true;
-        }
-
-        return false;
-    }
-
     protected updateValues(): Array<T> | null {
 
-        // If the source has changed, set the current value to its latest.
-        if (this.source.getTick() > this.lastSourceTick) {
-            this.currentValue = this.source.get();
-            this.lastSourceTick = this.source.getTick();
+        if (this.source.getVersion() === this.lastSourceVersion && this.updates.getVersion() === this.lastUpdateVersion) {
+            return null;
         }
 
-        let val = this.currentValue;
+        if (this.source.getVersion() > this.lastSourceVersion) {
+            
+        }
+
+        let val = this.source.get();
 
         if (val === undefined) {
             return null;
         }
 
         // If the updates stream has changed, apply all buffered updates.
-        if (this.updates.getTick() > this.lastUpdateTick) {
+        if (this.updates.getVersion() > this.lastUpdateVersion) {
             this.updates.getAll().forEach(update => val = update(val!));
-            this.lastUpdateTick = this.updates.getTick();
-            this.currentValue = val;
         }
+
+        this.lastSourceVersion = this.source.getVersion();
+        this.lastUpdateVersion = this.updates.getVersion();
 
         // Similar to fold, we can't logically buffer more than one value.
         return [val];
