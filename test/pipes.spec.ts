@@ -131,6 +131,62 @@ describe('AccumulatingPipe', () => {
     });
 });
 
+describe('dropRepeats', () => {
+    it('drops consecutive values that are strictly equal', async () => {
+        const source = Pipe.input<number>();
+        const results = traceOutputs(source.dropRepeats());
+        await vi.advanceTimersByTimeAsync(10);
+
+        source.set(1);
+        await vi.advanceTimersByTimeAsync(10);
+        source.set(1);
+        await vi.advanceTimersByTimeAsync(10);
+        source.set(2);
+        await vi.advanceTimersByTimeAsync(10);
+        source.set(2);
+        await vi.advanceTimersByTimeAsync(10);
+        source.set(1);
+        await vi.advanceTimersByTimeAsync(10);
+
+        expect(results).toEqual([1, 2, 1]);
+    });
+
+    it('keeps repeated values when another value occurs between them', async () => {
+        const source = Pipe.input<number>();
+        const results = traceOutputs(source.dropRepeats());
+        await vi.advanceTimersByTimeAsync(10);
+
+        source.set(3);
+        await vi.advanceTimersByTimeAsync(10);
+        source.set(3);
+        await vi.advanceTimersByTimeAsync(10);
+        source.set(4);
+        await vi.advanceTimersByTimeAsync(10);
+        source.set(3);
+        await vi.advanceTimersByTimeAsync(10);
+
+        expect(results).toEqual([3, 4, 3]);
+    });
+
+    it('can use a custom equality function', async () => {
+        const source = Pipe.input<{ id: number; name: string }>();
+        const results = traceOutputs(source.dropRepeats((a, b) => a.id === b.id));
+        await vi.advanceTimersByTimeAsync(10);
+
+        source.set({ id: 1, name: 'first' });
+        await vi.advanceTimersByTimeAsync(10);
+        source.set({ id: 1, name: 'updated' });
+        await vi.advanceTimersByTimeAsync(10);
+        source.set({ id: 2, name: 'other' });
+        await vi.advanceTimersByTimeAsync(10);
+
+        expect(results).toEqual([
+            { id: 1, name: 'first' },
+            { id: 2, name: 'other' }
+        ]);
+    });
+});
+
 describe('ProducerPipe', () => {
     it('activates and disposes a producer function based on subscriptions', async () => {
 
