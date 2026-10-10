@@ -338,6 +338,13 @@ export abstract class Pipe<T> {
         return new MapPipe<T, TEnd>(this, projection);
     }
 
+    /** Drops outputs whose source version is at or before the creation version.
+     * Lazy outputs evaluated later may qualify even when their inputs already existed.
+     */
+    dropExisting(): Pipe<T> {
+        return new DropExistingPipe(this);
+    }
+
     fold<TState>(accumulator: (state: TState, value: T) => TState, seed: TState): Pipe<TState> {
         return new AccumulatingPipe<T, TState>(this, accumulator, seed);
     }
@@ -613,6 +620,29 @@ export class MapPipe<TSource, TEnd> extends Pipe<TEnd> {
         return this.source.getAll()
             .map(val => this.projection(val))
             .filter(val => val !== undefined) as Array<TEnd>;
+    }
+}
+
+export class DropExistingPipe<T> extends Pipe<T> {
+
+    private lastSourceVersion = Pipe.globalVersion;
+
+    constructor(public readonly source: Pipe<T>) {
+        super();
+        this.listenTo(source);
+    }
+
+    protected updateValues(): Array<T> | null {
+        const sourceVersion = this.source.getVersion();
+
+        if (sourceVersion <= this.lastSourceVersion) {
+            return null;
+        }
+
+        this.lastSourceVersion = sourceVersion;
+        const values = this.source.getAll();
+
+        return values.length > 0 ? values : null;
     }
 }
 
