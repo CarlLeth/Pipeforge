@@ -72,11 +72,11 @@ describe('AccumulatingPipe', () => {
         expect(sum.get()).toBe(0);
 
         state.set(3);
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         expect(result).toBe(3);
 
         state.set(5);
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         expect(result).toBe(8);
 
         // An interesting case happens here.
@@ -89,7 +89,7 @@ describe('AccumulatingPipe', () => {
         state.set(11);
         state.set(2);
 
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         expect(result).toBe(21);
         expect(sum.get()).toBe(21);
     });
@@ -108,17 +108,17 @@ describe('AccumulatingPipe', () => {
         expect(sum.get()).toBe(0);
 
         state.set(3);
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         expect(sum.get()).toBe(3);
 
         state.set(5);
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         expect(sum.get()).toBe(8);
 
         state.set(11);
         state.set(2);
 
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         expect(sum.get()).toBe(21);
 
         let result: number | undefined = undefined;
@@ -135,18 +135,18 @@ describe('dropRepeats', () => {
     it('drops consecutive values that are strictly equal', async () => {
         const source = Pipe.input<number>();
         const results = traceOutputs(source.dropRepeats());
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
 
         source.set(1);
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         source.set(1);
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         source.set(2);
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         source.set(2);
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         source.set(1);
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
 
         expect(results).toEqual([1, 2, 1]);
     });
@@ -154,16 +154,16 @@ describe('dropRepeats', () => {
     it('keeps repeated values when another value occurs between them', async () => {
         const source = Pipe.input<number>();
         const results = traceOutputs(source.dropRepeats());
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
 
         source.set(3);
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         source.set(3);
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         source.set(4);
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         source.set(3);
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
 
         expect(results).toEqual([3, 4, 3]);
     });
@@ -171,14 +171,14 @@ describe('dropRepeats', () => {
     it('can use a custom equality function', async () => {
         const source = Pipe.input<{ id: number; name: string }>();
         const results = traceOutputs(source.dropRepeats((a, b) => a.id === b.id));
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
 
         source.set({ id: 1, name: 'first' });
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         source.set({ id: 1, name: 'updated' });
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         source.set({ id: 2, name: 'other' });
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
 
         expect(results).toEqual([
             { id: 1, name: 'first' },
@@ -233,7 +233,7 @@ describe('ProducerPipe', () => {
 });
 
 describe('State', () => {
-    it('can be set and read synchronously in any order', async () => {
+    it('can be set and read in any order', async () => {
         const number = Pipe.state(1);
         const letter = Pipe.state("a");
 
@@ -241,35 +241,34 @@ describe('State', () => {
             .combine(number, letter)
             .map(([n, l]) => `${n}${l}`);
 
-        let result = "";
-        numlet.subscribe(r => result = r);
-        await vi.advanceTimersByTimeAsync(10);
+        const results = traceOutputs(numlet);
 
-        expect(result).toBe("1a");
+        await tick();
+
+        expect(results).toEqual(["1a"]);
 
         number.set(2);
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
 
-        expect(result).toBe("2a");
-        await vi.advanceTimersByTimeAsync(10);
+        expect(results).toEqual(["1a", "2a"]);
+        expect(numlet.get()).toEqual("2a");
 
         number.set(3);
-        expect(numlet.get()).toBe("3a"); // Synchronously request the current value
-        number.set(4);
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
 
-        // "3a" should never be broadcast, although this is not currently tested for
-        expect(result).toBe("4a");
+        expect(numlet.get()).toEqual("3a");
+        expect(results).toEqual(["1a", "2a", "3a"]);
     });
 });
 
 describe('PipeInput', () => {
-    it('forwards values set directly on the input', () => {
+    it('forwards values set directly on the input', async () => {
         const input = Pipe.input<number>();
 
         expect(input.get()).toBeUndefined();
-
         input.set(3);
+
+        await tick();
 
         expect(input.get()).toBe(3);
     });
@@ -283,7 +282,7 @@ describe('PipeInput', () => {
         expect(input.members).toEqual([source]);
 
         source.set(4);
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         expect(input.get()).toBe(4);
 
         input.remove(source);
@@ -291,7 +290,7 @@ describe('PipeInput', () => {
         expect(input.members).toEqual([]);
 
         source.set(9);
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         expect(input.get()).toBe(4);
     });
 
@@ -311,20 +310,20 @@ describe('PipeInput', () => {
         const results = traceOutputs(input);
 
         input.set(1);
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
 
         expect(results).toEqual([1]);
 
         doubleAction.call();
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         expect(results).toEqual([1, 2]);
 
         doubleAction.call();
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         expect(results).toEqual([1, 2, 4]);
 
         sub1Action.call();
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         expect(results).toEqual([1, 2, 4, 3]);
 
         await vi.advanceTimersByTimeAsync(100);
@@ -343,33 +342,33 @@ describe('FlatteningPipe', () => {
         flat.subscribe(v => result = v);
         expect(flat.get()).toBe(1);
 
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         expect(result).toBe(1);
 
         selector.set(letters as Pipe<number | string>);
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         expect(result).toBe('a');
 
         letters.set('b');
         numbers.set(2);
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         expect(result).toBe('b');
 
         numbers.set(3);
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         expect(result).toBe('b');
 
         numbers.set(4);
         selector.set(numbers as Pipe<number | string>);
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         expect(result).toBe(4);
 
         numbers.set(5);
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         expect(result).toBe(5);
 
         selector.set(letters as Pipe<number | string>);
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         expect(result).toBe('b');
     });
 });
@@ -390,7 +389,7 @@ describe('DebouncingPipe', () => {
         await vi.advanceTimersByTimeAsync(99);
         expect(results).toEqual([]);
 
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         expect(results).toEqual([1]);
     });
 
@@ -411,7 +410,7 @@ describe('DebouncingPipe', () => {
         await vi.advanceTimersByTimeAsync(99);
         expect(results).toEqual([]);
 
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         expect(results).toEqual([2]);
     });
 });
@@ -428,12 +427,12 @@ describe('ErrorCatchingPipe', () => {
         checked.subscribe(value => results.push(value));
 
         input.set(4);
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         expect(checked.get()).toBe(4);
         expect(results).toEqual([4]);
 
         input.set(-2);
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         expect(checked.get()).toContain('invalid: -2 must be positive');
         expect(results[0]).toBe(4);
         expect(results[1]).toContain('invalid: -2 must be positive');
@@ -446,11 +445,11 @@ describe('ErrorCatchingPipe', () => {
             .catch(error => `error: ${(error as Error).message}`);
 
         input.set(-1);
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         expect(checked.get()).toContain('error: value must not be negative');
 
         input.set(6);
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         expect(checked.get()).toBe(6);
     });
 
@@ -471,20 +470,20 @@ describe('GatingPipe', () => {
         const results: number[] = [];
 
         gated.subscribe(value => results.push(value));
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         expect(results).toEqual([]);
 
         values.set(20);
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         expect(results).toEqual([]);
 
         gate.call();
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         expect(results).toEqual([20]);
 
         // Emits again if the gate is called again.
         gate.call();
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         expect(results).toEqual([20, 20]);
         expect(gated.get()).toBe(20);
     });
@@ -496,27 +495,29 @@ describe('GatingPipe', () => {
         const results: string[] = [];
 
         gated.subscribe(value => results.push(value));
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
 
         values.set('second');
         values.set('third');
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         expect(results).toEqual([]);
         
         gate.call();
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         expect(results).toEqual(['third']);
     });
 });
 
 describe('MapPipe', () => {
-    it('transforms each source value', () => {
+    it('transforms each source value', async () => {
         const source = Pipe.state(3);
         const mapped = source.map(value => value * 2);
 
+        await tick();
         expect(mapped.get()).toBe(6);
 
         source.set(5);
+        await tick();
         expect(mapped.get()).toBe(10);
     });
 
@@ -526,10 +527,11 @@ describe('MapPipe', () => {
         const mapped = source.map(projection);
 
         source.set(1);
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         source.set(2);
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         source.set(3);
+        await tick();
 
         // The projection function should not be called until the value is actually broadcasted or pulled somehow.
         expect(projection).not.toHaveBeenCalled();
@@ -538,18 +540,17 @@ describe('MapPipe', () => {
         expect(projection).toHaveBeenCalledTimes(1);
 
         // Multiple pulls should not cause multiple calls of the projection function if the source has not changed.
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         expect(mapped.get()).toBe(30);
         expect(projection).toHaveBeenCalledTimes(1);
 
-        await vi.advanceTimersByTimeAsync(10);
         source.set(4);
+        await tick();
         expect(mapped.get()).toBe(40);
         expect(projection).toHaveBeenCalledTimes(2);
 
-        await vi.advanceTimersByTimeAsync(10);
         source.set(5);
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         source.set(6);
         expect(mapped.get()).toBe(60);
         expect(projection).toHaveBeenCalledTimes(3);
@@ -563,20 +564,20 @@ describe('FilterPipe', () => {
         const results: number[] = [];
 
         filtered.subscribe(value => results.push(value));
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
 
         source.set(2);
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         expect(filtered.get()).toBe(2);
         expect(results).toEqual([2]);
 
         source.set(3);
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         expect(filtered.get()).toBe(2);
         expect(results).toEqual([2]);
 
         source.set(4);
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         expect(filtered.get()).toBe(4);
         expect(results).toEqual([2, 4]);
     });
@@ -594,29 +595,34 @@ describe('FilterPipe', () => {
 });
 
 describe('CombinedPipe', () => {
-    it('emits the latest value from every source once all sources have values', () => {
+    it('emits the latest value from every source once all sources have values', async () => {
         const number = Pipe.state(1);
         const letter = Pipe.state('a');
         const combined = Pipe.combine(number, letter);
 
+        await tick();
         expect(combined.get()).toEqual([1, 'a']);
 
         number.set(2);
+        await tick();
         expect(combined.get()).toEqual([2, 'a']);
 
         letter.set('b');
+        await tick();
         expect(combined.get()).toEqual([2, 'b']);
     });
 
-    it('does not emit while any source is missing a value', () => {
+    it('does not emit while any source is missing a value', async () => {
         const number = Pipe.state<number>();
         const letter = Pipe.state('a');
         const combined = Pipe.combine(number, letter);
 
+        await tick();
         expect(combined.get()).toBeUndefined();
         expect(combined.getAll()).toEqual([]);
 
         number.set(2);
+        await tick();
         expect(combined.get()).toEqual([2, 'a']);
     });
 
@@ -645,7 +651,7 @@ describe('CombinedPipe', () => {
 
         combined.subscribe(value => results.push(value));
 
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
         expect(results).toEqual(["a string".length]);
 
         subjects.set(17);
@@ -655,7 +661,7 @@ describe('CombinedPipe', () => {
         // when a subscriber is subscribed AND a frame has passed.
         funcs.set((x: number) => x.toFixed(1));
 
-        await vi.advanceTimersByTimeAsync(10);
+        await tick();
 
         expect(results).toEqual(["a string".length, "17.0"]);
         expect(error).toBeNull();
@@ -663,47 +669,83 @@ describe('CombinedPipe', () => {
 });
 
 describe('MergedPipe', () => {
-    it('emits the latest value from whichever source changes', async () => {
+    it('emits the last-emitted value from any of its sources', async () => {
         const number = Pipe.state(1);
         const letter = Pipe.state('a');
         const merged = Pipe.merge(number, letter);
 
+        await tick();
         expect(merged.getAll()).toEqual([1, 'a']);
 
-        await vi.advanceTimersByTimeAsync(0);
         number.set(2);
+        await tick();
         expect(merged.getAll()).toEqual([2]);
 
-        await vi.advanceTimersByTimeAsync(0);
         letter.set('b');
+        await tick();
         expect(merged.getAll()).toEqual(['b']);
     });
 
-    it('emits same-batch values in source order', () => {
+    it('emits the last value from its own last value', async () => {
         const first = Pipe.state<number>();
         const second = Pipe.state<number>();
         const merged = Pipe.merge(first, second);
 
         second.set(3);
-        first.set(1);
-        second.set(4);
-        first.set(2);
+        await tick();
 
-        expect(merged.getAll()).toEqual([1, 2, 3, 4]);
+        first.set(1);
+        await tick();
+
+        second.set(4);
+        await tick();
+
+        first.set(2);
+        await tick();
+
+        expect(merged.get()).toEqual(2);
     });
 
-    it('does not advance for no-op input pings', () => {
+    it('does not advance for no-op input pings', async () => {
         const source = Pipe.state<number>();
         const empty = source.filter(() => false);
         const merged = Pipe.merge(empty);
 
-        expect(merged.getVersion()).toBe(-1);
+        const results = traceOutputs(merged);
+
+        expect(results).toEqual([]);
 
         source.set(1);
         merged.get();
 
-        expect(merged.getAll()).toEqual([]);
-        expect(merged.getVersion()).toBe(-1);
+        await tick();
+
+        expect(results).toEqual([]);
+    });
+
+    it('emits the most recent value from pre-existing pipes when created', async () => {
+
+        const first = Pipe.state<number>();
+        const second = Pipe.state<number>();
+
+        second.set(3);
+        const has3 = Pipe.merge(first, second);
+        await tick();
+
+        expect(has3.get()).toEqual(3);
+
+        first.set(1);
+        await tick();
+        const has1 = Pipe.merge(first, second);
+        await tick();
+        expect(has1.get()).toEqual(1);
+
+        second.set(4);
+        await tick();
+        const has4 = Pipe.merge(first, second);
+        await tick();
+        expect(has4.get()).toEqual(4);
+
     });
 });
 
@@ -713,4 +755,8 @@ function traceOutputs<T>(pipe: Pipe<T>) {
     const outputs: Array<T> = [];
     pipe.subscribe(val => outputs.push(val));
     return outputs;
+}
+
+async function tick() {
+    await vi.advanceTimersByTimeAsync(4);
 }
