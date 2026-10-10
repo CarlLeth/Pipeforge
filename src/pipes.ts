@@ -35,15 +35,18 @@ export abstract class Pipe<T> {
     private static livePipes = new Set<Pipe<any>>();
 
     protected static globalVersion = 0;
-    protected static globalBatch = 0;
-    private static globalBatchUpdated = false;
+    private static globalVersionUpdating = false;
 
-    protected static updateGlobalBatch() {
-        if (!Pipe.globalBatchUpdated) {
-            Pipe.globalBatch++;
-            Pipe.globalBatchUpdated = true;
-            setTimeout(() => Pipe.globalBatchUpdated = false);
+    protected static updateGlobalVersion() {
+        if (!Pipe.globalVersionUpdating) {
+            Pipe.globalVersionUpdating = true;
+            setTimeout(() => {
+                Pipe.globalVersion++;
+                Pipe.globalVersionUpdating = false
+            });
         }
+
+        return Pipe.globalVersion;
     }
 
     // -- Primary public methods --
@@ -106,18 +109,16 @@ export abstract class Pipe<T> {
     private isUpdating: boolean = false;
 
     private values: Array<T> = [];
-    // The batch containing the current values. Values posted in one batch are accumulated.
-    private localBatch = -1;
-    // A pipe-local version. Unlike the batch, this changes for every update.
-    private localVersion = -1;
-    private lastBroadcastTick = -1;
+
+    private pingedVersion = -1;
+    protected localVersion = -1;
+    private lastBroadcastVersion = -1;
 
     private weakListeners = new Set<WeakRef<Pipe<any>>>();
-
     private subscribers = new Set<(value: T) => void>();
 
     private incrementVersion() {
-        this.localVersion = Pipe.globalVersion++;
+        this.localVersion = Pipe.updateGlobalVersion();
     }
 
     private updateIfNecessary() {
@@ -126,7 +127,8 @@ export abstract class Pipe<T> {
             throw new Error("Cycle detected", { cause: this });
         }
 
-        if (this.isDirty) {
+        // If the latest pinged tick is still the same as the global tick, the graph has not settled yet, so we don't do anything even if we're dirty.
+        if (this.pingedVersion !== Pipe.globalVersion && this.isDirty) {
             this.isUpdating = true;
             try {
                 // A dirty state means that a source ping was received. The update
@@ -206,16 +208,17 @@ export abstract class Pipe<T> {
     protected onPing() {
         if (!this.isDirty) {
             this.isDirty = true;
+            this.pingedVersion = Pipe.globalVersion;
             this.pingListeners();
         }
     }
 
     protected broadcastValue() {
-        if (this.getVersion() <= this.lastBroadcastTick) {
+        if (this.getVersion() <= this.lastBroadcastVersion) {
             return;
         }
 
-        this.lastBroadcastTick = this.getVersion();
+        this.lastBroadcastVersion = this.getVersion();
 
         const nextValue = this.get();
         if (nextValue !== undefined) {
@@ -224,7 +227,7 @@ export abstract class Pipe<T> {
     }
 
     protected listenTo(...sourcePipes: Array<Pipe<any>>) {
-        Pipe.updateGlobalBatch();
+        Pipe.updateGlobalVersion();
 
         const ref = new WeakRef(this);
         sourcePipes.forEach(source => {
@@ -252,11 +255,9 @@ export abstract class Pipe<T> {
 
     protected postValues(values: Array<T>) {
         if (values.length > 0) {
-            Pipe.updateGlobalBatch();
+            this.localVersion = Pipe.updateGlobalVersion();
             this.values = values;
             this.isDirty = false;
-            this.localBatch = Pipe.globalBatch;
-            this.incrementVersion();
             this.pingListeners();
         }
     }
@@ -264,16 +265,16 @@ export abstract class Pipe<T> {
     protected initValues(values: Array<T>) {
         if (values.length > 0) {
             this.values = values;
-            this.localBatch = 0;
+            this.localVersion = 0;
             this.incrementVersion();
             this.pingListeners();
         }
     }
 
     protected postSingleValue(value: T) {
-        Pipe.updateGlobalBatch();
+        Pipe.updateGlobalVersion();
 
-        if (this.localBatch === Pipe.globalBatch) {
+        if (this.localVersion === Pipe.globalVersion) {
             // Accumulate values that are posted in the same cycle.
             this.values = [...this.values, value];
         }
@@ -283,8 +284,7 @@ export abstract class Pipe<T> {
         }
 
         this.isDirty = false;
-        this.localBatch = Pipe.globalBatch;
-        this.incrementVersion();
+        this.localVersion = Pipe.globalVersion;
         this.pingListeners();
     }
 
@@ -1028,12 +1028,12 @@ export class AccumulatingPipe<TIn, TState> extends Pipe<TState> {
     protected updateValues(): Array<TState> | null {
         if (this.source.getVersion() > this.lastSourceTick) {
 
-            if (Pipe.globalBatch > this.lastSourceBatch) {
+            if (Pipe.globalVersion > this.lastSourceBatch) {
                 this.batchProcessedValues = 0;
             }
 
             this.lastSourceTick = this.source.getVersion();
-            this.lastSourceBatch = Pipe.globalBatch;
+            this.lastSourceBatch = Pipe.globalVersion;
 
             let newValues = this.source.getAll();
 
@@ -1296,7 +1296,7 @@ export class UpdatingPipe<T> extends Pipe<T> {
         }
 
         if (this.source.getVersion() > this.lastSourceVersion) {
-            
+
         }
 
         let val = this.source.get();
