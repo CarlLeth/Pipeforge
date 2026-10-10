@@ -34,6 +34,7 @@ export abstract class Pipe<T> {
 
     private static livePipes = new Set<Pipe<any>>();
 
+    protected static globalVersion = 0;
     protected static globalBatch = 0;
     private static globalBatchUpdated = false;
 
@@ -115,6 +116,10 @@ export abstract class Pipe<T> {
 
     private subscribers = new Set<(value: T) => void>();
 
+    private incrementVersion() {
+        this.localVersion = Pipe.globalVersion++;
+    }
+
     private updateIfNecessary() {
         if (this.isUpdating) {
             Pipe.debug.lastCycle = this;
@@ -131,7 +136,7 @@ export abstract class Pipe<T> {
 
                 if (nextValues !== null) {
                     this.values = nextValues;
-                    this.localVersion++;
+                    this.incrementVersion();
                 }
             }
             finally {
@@ -251,7 +256,7 @@ export abstract class Pipe<T> {
             this.values = values;
             this.isDirty = false;
             this.localBatch = Pipe.globalBatch;
-            this.localVersion++;
+            this.incrementVersion();
             this.pingListeners();
         }
     }
@@ -260,7 +265,7 @@ export abstract class Pipe<T> {
         if (values.length > 0) {
             this.values = values;
             this.localBatch = 0;
-            this.localVersion++;
+            this.incrementVersion();
             this.pingListeners();
         }
     }
@@ -279,7 +284,7 @@ export abstract class Pipe<T> {
 
         this.isDirty = false;
         this.localBatch = Pipe.globalBatch;
-        this.localVersion++;
+        this.incrementVersion();
         this.pingListeners();
     }
 
@@ -603,13 +608,11 @@ export class MapPipe<TSource, TEnd> extends Pipe<TEnd> {
             return null;
         }
 
-        const values = this.source.getAll()
-            .map(val => this.projection(val))
-            .filter(val => val !== undefined) as Array<TEnd>;
-
         this.lastSourceVersion = sourceTick;
 
-        return values.length > 0 ? values : null;
+        return this.source.getAll()
+            .map(val => this.projection(val))
+            .filter(val => val !== undefined) as Array<TEnd>;
     }
 }
 
@@ -715,9 +718,19 @@ export class MergedPipe extends Pipe<any> {
             return null;
         }
 
-        this.lastVersions = this.pipes.map(pipe => pipe.getVersion());
-        const values = changedPipes.map(pipe => pipe.getAll()).flat();
-        return values.length > 0 ? values : null;
+        for (let i = 0; i < this.pipes.length; i++) {
+            this.lastVersions[i] = this.pipes[i].getVersion();
+        }
+
+        if (changedPipes.length == 1) {
+            return changedPipes[0].getAll();
+        }
+        else {
+            return changedPipes
+                .sort((a, b) => a.getVersion() - b.getVersion())
+                .map(pipe => pipe.getAll())
+                .flat();
+        }
     }
 }
 
